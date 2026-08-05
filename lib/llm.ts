@@ -90,7 +90,25 @@ export const FALTA_LLAVE =
  * En Vercel el tope depende del plan: con Fluid Compute son 60 s, pero un
  * proyecto Hobby sin el puede cortar mucho antes. Por eso es ajustable.
  */
-const TIMEOUT_DEFECTO_MS = 20_000;
+const TIMEOUT_DEFECTO_MS = 45_000;
+
+/**
+ * Control de razonamiento para OpenRouter.
+ *
+ * Los modelos de razonamiento gastan la mayor parte del tiempo pensando
+ * antes de escribir la primera palabra, y esta tarea no lo necesita: es
+ * extraer unos campos de una imagen, no resolver un problema. Con el
+ * esfuerzo en bajo la latencia cae mucho.
+ *
+ * OPENROUTER_REASONING acepta low | medium | high | off.
+ * Los modelos que no soportan el parametro simplemente lo ignoran.
+ */
+function razonamiento(): Record<string, unknown> {
+  const v = (process.env.OPENROUTER_REASONING || "low").toLowerCase();
+  if (v === "off" || v === "false") return { reasoning: { enabled: false } };
+  if (v === "medium" || v === "high") return { reasoning: { effort: v } };
+  return { reasoning: { effort: "low" } };
+}
 
 function presupuestoMs(): number {
   const env = Number(process.env.LLM_TIMEOUT_MS);
@@ -150,6 +168,12 @@ export interface Diagnostico {
   baseUrl: string;
   /** Resultado de una llamada barata al proveedor, sin gastar modelo. */
   conectividad: { ok: boolean; ms: number; detalle: string };
+  /**
+   * Generacion minima con el modelo configurado, solo texto y pocos
+   * tokens. Es la prueba decisiva: si conectividad va bien pero esto
+   * tarda o falla, el problema es el modelo, no la infraestructura.
+   */
+  generacion: { ok: boolean; ms: number; detalle: string };
 }
 
 /**
@@ -171,10 +195,12 @@ export async function diagnosticar(): Promise<Diagnostico> {
     timeoutMs: presupuestoMs(),
     baseUrl: activo?.proveedor === "anthropic" ? "https://api.anthropic.com" : base,
     conectividad: { ok: false, ms: 0, detalle: "no se intento" },
+    generacion: { ok: false, ms: 0, detalle: "no se intento" },
   };
 
   if (!activo) {
     salida.conectividad.detalle = "sin llave configurada";
+    salida.generacion.detalle = "sin llave configurada";
     return salida;
   }
 
@@ -227,7 +253,95 @@ export async function diagnosticar(): Promise<Diagnostico> {
     clearTimeout(reloj);
   }
 
+  if (!salida.conectividad.ok) {
+    salida.generacion.detalle = "omitida: no hay conexion con el proveedor";
+    return salida;
+  }
+  salida.generacion = await probarGeneracion(activo);
   return salida;
+}
+
+/**
+ * Pide unos pocos tokens de texto al modelo configurado. Cuesta
+ * centavos y contesta la pregunta que ninguna otra sonda contesta: si
+ * este modelo, desde esta funcion, alcanza a generar algo dentro del
+ * tiempo disponible.
+ */
+async function probarGeneracion(activo: {
+  proveedor: Proveedor;
+  modelo: string;
+}): Promise<{ ok: boolean; ms: number; detalle: string }> {
+  const limite = Math.min(presupuestoMs(), 25_000);
+  const ctrl = new AbortController();
+  const reloj = setTimeout(() => ctrl.abort(), limite);
+  const t0 = Date.now();
+  try {
+    if (activo.proveedor === "openrouter") {
+      const base = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+      const res = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": process.env.OPENROUTER_SITE_URL || "https://mueble-calc.vercel.app",
+          "X-Title": "mueble-calc",
+        },
+        body: JSON.stringify({
+          model: activo.modelo,
+          max_tokens: 16,
+          ...razonamiento(),
+          messages: [{ role: "user", content: "Responde solo: ok" }],
+        }),
+      });
+      const cuerpo = await res.text();
+      const ms = Date.now() - t0;
+      if (!res.ok) return { ok: false, ms, detalle: `HTTP ${res.status}: ${cuerpo.slice(0, 200)}` };
+      let texto = "";
+      try {
+        texto = extraerTexto(JSON.parse(cuerpo)?.choices?.[0]) ?? "";
+      } catch {
+        /* respuesta rara */
+      }
+      return {
+        ok: !!texto,
+        ms,
+        detalle: texto ? `respondio "${texto.slice(0, 40)}"` : `sin texto: ${cuerpo.slice(0, 200)}`,
+      };
+    }
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY as string,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: activo.modelo,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "Responde solo: ok" }],
+      }),
+    });
+    const ms = Date.now() - t0;
+    return {
+      ok: res.ok,
+      ms,
+      detalle: res.ok ? "respondio" : `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+    };
+  } catch (e) {
+    const ms = Date.now() - t0;
+    return {
+      ok: false,
+      ms,
+      detalle: ctrl.signal.aborted
+        ? `el modelo no genero nada en ${Math.round(limite / 1000)}s con una peticion trivial: es el modelo, no la red`
+        : String(e).slice(0, 200),
+    };
+  } finally {
+    clearTimeout(reloj);
+  }
 }
 
 async function viaOpenRouter(
@@ -251,6 +365,7 @@ async function viaOpenRouter(
     body: JSON.stringify({
       model: modelo,
       max_tokens: maxTokens(req.maxTokens),
+      ...razonamiento(),
       messages: [
         {
           role: "user",

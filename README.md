@@ -27,7 +27,8 @@ necesita**: se procesa en tu navegador.
 | `OPENROUTER_MODEL` | Modelo, p. ej. `moonshotai/kimi-k3`. **Debe aceptar imágenes.** |
 | `OPENROUTER_SITE_URL` | Opcional, para atribuir el tráfico a tu app. |
 | `OPENROUTER_MAX_TOKENS` | Opcional, por defecto 4000. Súbelo si el modelo devuelve respuestas vacías. |
-| `LLM_TIMEOUT_MS` | Opcional, por defecto 20000. Debe quedar por debajo del límite de duración de tu plan. |
+| `LLM_TIMEOUT_MS` | Opcional, por defecto 45000. Debe quedar por debajo del límite de duración de tu plan. |
+| `OPENROUTER_REASONING` | Opcional, por defecto `low`. `low`/`medium`/`high`/`off`. Bájalo si el modelo tarda demasiado. |
 | `ANTHROPIC_API_KEY` | Alternativa: API de Claude directo. |
 | `ANTHROPIC_MODEL` | Opcional, por defecto `claude-sonnet-5`. |
 
@@ -36,10 +37,15 @@ imagen, así que un modelo de solo texto va a fallar. Si pasa, la app lo dice co
 ese mensaje en vez del error crudo del proveedor.
 
 **Si algo falla, abre `/api/diagnostico`.** Reporta qué proveedor y modelo están
-activos, si la llave está puesta (nunca la muestra), y hace una llamada barata al
-proveedor para comprobar que la función alcanza internet y que la credencial sirve.
-Distingue los tres casos que desde el navegador se ven igual: llave mala, sin salida
-a internet, y modelo lento.
+activos, si la llave está puesta (nunca la muestra), y hace dos sondas:
+
+- `conectividad`: llamada a `/key`, sin gastar modelo. Valida credencial y salida a
+  internet.
+- `generacion`: unos pocos tokens de texto con el modelo configurado. Es la prueba
+  decisiva — si `conectividad` va bien y `generacion` no, el problema es el modelo.
+
+Con eso se separan los casos que desde el navegador se ven idénticos: llave mala,
+sin salida a internet, y modelo lento.
 
 > **Duración de la función.** Estas rutas declaran `maxDuration = 60`, pero el tope
 > real lo pone tu plan de Vercel. Si la plataforma corta antes que `LLM_TIMEOUT_MS`,
