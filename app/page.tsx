@@ -8,7 +8,7 @@ import PartsTable from "@/components/PartsTable";
 import CostPanel from "@/components/CostPanel";
 import CatalogEditor from "@/components/CatalogEditor";
 import CncPanel, { type EstadoCnc } from "@/components/CncPanel";
-import { despieceCnc, proponerArmado } from "@/lib/cncArmado";
+import { aplicarAjuste, despieceCnc, proponerArmado } from "@/lib/cncArmado";
 import { defaultCatalog } from "@/lib/catalog";
 import { costModel, cutList, money } from "@/lib/costing";
 import { costCsv, cutListCsv, download, manifestJson, partsDxf } from "@/lib/exporters";
@@ -72,10 +72,13 @@ export default function Page() {
     () => (cnc ? despieceCnc(cnc.lectura, cnc.asig, catalog) : buildFurniture(spec)),
     [cnc, spec, catalog]
   );
-  const armado = useMemo(
-    () => (cnc?.armar ? proponerArmado(cnc.lectura, cnc.opciones) : null),
-    [cnc]
-  );
+  const armado = useMemo(() => {
+    if (!cnc?.armar) return null;
+    const a = proponerArmado(cnc.lectura, cnc.opciones);
+    // Las correcciones del usuario se aplican encima de la propuesta, no
+    // la reemplazan: si cambia el armado, los ajustes siguen valiendo.
+    return { ...a, colocaciones: a.colocaciones.map((c) => aplicarAjuste(c, cnc.ajustes[c.piezaId])) };
+  }, [cnc]);
   const rows = useMemo(() => cutList(model, modulos), [model, modulos]);
   const cost = useMemo(() => costModel(model, catalog, modulos), [model, catalog, modulos]);
   const selPart = model.parts.find((p) => p.id === selected);
@@ -322,8 +325,11 @@ export default function Page() {
                 catalog={catalog}
                 estado={cnc}
                 onEstado={(e) => {
+                  // La seleccion solo se pierde al cambiar de archivo. Si se
+                  // limpiara en cada cambio de estado, mover un control de
+                  // ajuste deseleccionaria la pieza que se esta ajustando.
+                  if (!e || e.lectura !== cnc?.lectura) setSelected(null);
                   setCnc(e);
-                  setSelected(null);
                 }}
                 selected={selected}
                 onSelect={setSelected}

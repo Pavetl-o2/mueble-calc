@@ -5,7 +5,8 @@ import { defaultCatalog } from "../lib/catalog";
 import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
 import { leerCorteDxf } from "../lib/cnc";
-import { despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
+import { aplicarAjuste, despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
+import { detectarEnsambles } from "../lib/cncEnsambles";
 import { extraerJson, imagenDemasiadoGrande, IMAGEN_MAX_BYTES, proveedorActivo } from "../lib/llm";
 import { readFileSync, existsSync } from "fs";
 
@@ -287,6 +288,86 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   }
   chk(peor < 0.05, `orientacion: las piezas no quedaron alineadas (desviacion ${peor.toFixed(3)})`);
   console.log(`orientacion: 4 variantes giradas/espejeadas normalizadas (desviacion ${peor.toFixed(3)})`);
+}
+
+{
+  // Espigas y mortajas: un panel con dos mortajas de 24x90 y dos piezas
+  // con una espiga de 90mm cada una. Deben emparejarse con holgura cero.
+  const espiga = (x0: number): [number, number][] => [
+    // Barra de 600x120 con una espiga de 90x30 sobresaliendo arriba.
+    [x0, 0], [x0 + 600, 0], [x0 + 600, 120],
+    [x0 + 345, 120], [x0 + 345, 150], [x0 + 255, 150], [x0 + 255, 120],
+    [x0, 120],
+  ];
+  const cerrar = (pts: [number, number][]): [number, number, number, number][] =>
+    pts.map((p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      return [p[0], p[1], q[0], q[1]] as [number, number, number, number];
+    });
+
+  const segs = [
+    ...rect(0, 400, 1000, 1000),           // panel
+    ...rect(200, 700, 24, 90),             // mortaja a escuadra
+    ...rect(600, 700, 30, 90),             // mortaja mas ancha -> en angulo
+    ...cerrar(espiga(1400)),
+    ...cerrar(espiga(2200)),
+  ];
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  const panel = panelDe(l);
+  chk(panel != null && panel.huecos.length === 2, `e3: el panel deberia tener 2 mortajas`);
+
+  const e = detectarEnsambles(l.piezas, panel, 24);
+  const lens = Object.values(e.lenguetas).flat();
+  chk(lens.length === 2, `e3: se esperaban 2 espigas, hay ${lens.length}`);
+  chk(
+    lens.every((x) => Math.abs(x.ancho - 90) < 2),
+    `e3: ancho de espiga incorrecto (${lens.map((x) => x.ancho).join(",")})`
+  );
+  chk(
+    lens.every((x) => Math.abs(x.vuelo - 30) < 2),
+    `e3: vuelo de espiga incorrecto (${lens.map((x) => x.vuelo).join(",")})`
+  );
+  chk(e.ensambles.length === 2, `e3: se esperaban 2 ensambles, hay ${e.ensambles.length}`);
+  chk(
+    e.ensambles.every((x) => Math.abs(x.holgura) <= 1),
+    `e3: holguras fuera de rango (${e.ensambles.map((x) => x.holgura).join(",")})`
+  );
+  // La mortaja de 30 sobre tablero de 24 implica entrada en angulo.
+  const angulos = e.mortajas.flatMap((m) => m.ranuras.map((r) => r.angulo));
+  chk(
+    angulos.some((a) => a > 30 && a < 45),
+    `e3: no se dedujo el angulo de la ranura ancha (${angulos.join(",")})`
+  );
+  // Una mortaja por pieza: no se puede asignar la misma dos veces.
+  chk(
+    new Set(e.ensambles.map((x) => x.mortaja)).size === e.ensambles.length,
+    "e3: se asigno la misma mortaja a dos piezas"
+  );
+  console.log(
+    `ensambles: ${lens.length} espigas de ${lens[0]?.ancho}mm -> ${e.ensambles.length} pareja(s), angulos ${[...new Set(angulos)].join("/")}°`
+  );
+}
+
+{
+  // El ajuste manual son deltas sobre la propuesta, y debe poder anularla.
+  const base = {
+    piezaId: "x", rol: "vertical" as const, giro: 0, radio: 100, z: 700,
+    inclinacion: 0, acostada: false, giroLocal: 0, espejo: false,
+    desliz: 0, fuente: "simetria" as const,
+  };
+  const sin = aplicarAjuste(base, undefined);
+  chk(sin === base, "ajuste: sin deltas deberia devolver la misma colocacion");
+
+  const con = aplicarAjuste(base, { giro: 90, radio: -30, desliz: 25, z: 10, inclinacion: 15, voltear: true });
+  chk(Math.abs(con.giro - Math.PI / 2) < 1e-9, `ajuste: giro ${con.giro}`);
+  chk(con.radio === 70, `ajuste: radio ${con.radio}`);
+  chk(con.desliz === 25, `ajuste: desliz ${con.desliz}`);
+  chk(con.z === 710, `ajuste: z ${con.z}`);
+  chk(Math.abs(con.inclinacion - Math.PI / 12) < 1e-9, `ajuste: inclinacion ${con.inclinacion}`);
+  chk(con.espejo === true, "ajuste: voltear no invirtio el espejo");
+  // No debe tocar lo que no se pidio.
+  chk(con.piezaId === base.piezaId && con.acostada === base.acostada, "ajuste: modifico campos ajenos");
+  console.log("ajuste manual: deltas aplicados correctamente");
 }
 
 {

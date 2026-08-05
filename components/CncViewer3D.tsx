@@ -187,7 +187,9 @@ function PiezaColocada({
 
   return (
     <group rotation={[0, 0, c.giro]}>
-      <group position={[c.radio, 0, c.z]}>
+      {/* desliz corre a lo largo del propio eje de la pieza (la tangente),
+          que es lo que alinea su espiga con la mortaja. */}
+      <group position={[c.radio, c.desliz, c.z]}>
         <group rotation={[0, 0, Math.PI / 2]}>
           {/* +inclinacion abre la pieza hacia afuera por abajo, que es como
               se dibujan las patas conicas. Con signo negativo se cerrarian

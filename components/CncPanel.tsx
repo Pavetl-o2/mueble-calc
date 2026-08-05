@@ -5,10 +5,12 @@ import { leerCorteDxf, type LecturaCnc } from "@/lib/cnc";
 import {
   opcionesSugeridas,
   panelDe,
+  type AjustePieza,
   type AsignacionCnc,
   type OpcionesArmado,
   type Rol,
 } from "@/lib/cncArmado";
+import { detectarEnsambles } from "@/lib/cncEnsambles";
 import { postJson, prepararImagen, type ImagenLista } from "@/lib/imagen";
 import type { Catalog } from "@/lib/types";
 
@@ -30,6 +32,8 @@ export interface EstadoCnc {
   opciones: OpcionesArmado;
   armar: boolean;
   nombre: string;
+  /** Correcciones manuales del usuario, por pieza. */
+  ajustes: Record<string, AjustePieza>;
 }
 
 export default function CncPanel({
@@ -79,6 +83,7 @@ export default function CncPanel({
       opciones: opcionesSugeridas(l),
       armar: false,
       nombre: file.name.replace(/\.dxf$/i, ""),
+      ajustes: {},
     });
   }
 
@@ -199,6 +204,22 @@ export default function CncPanel({
 
   const l = estado.lectura;
   const panel = panelDe(l);
+  const ensambles = detectarEnsambles(l.piezas, panel, estado.asig.espesor);
+  const piezaSel = l.piezas.find((p) => p.id === selected);
+  const esPanelSel = piezaSel != null && piezaSel === panel;
+  const ajusteSel: AjustePieza = (selected && estado.ajustes[selected]) || {};
+
+  const setAjuste = (id: string, delta: Partial<AjustePieza>) =>
+    onEstado({
+      ...estado,
+      armar: true,
+      ajustes: { ...estado.ajustes, [id]: { ...(estado.ajustes[id] ?? {}), ...delta } },
+    });
+  const limpiarAjuste = (id: string) => {
+    const resto = { ...estado.ajustes };
+    delete resto[id];
+    onEstado({ ...estado, ajustes: resto });
+  };
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -404,11 +425,105 @@ export default function CncPanel({
           />
         </div>
         <p className="text-[12px] text-muted mt-2">
-          El armado coloca el panel arriba y reparte las piezas verticales por simetria. Es una
-          hipotesis para ver el mueble, no resuelve espiga por espiga: corrige con los controles
-          si no cae donde debe. El despiece y el costo NO dependen de esto.
+          Estos tres controles mueven todas las piezas a la vez. Para corregir una sola,
+          seleccionala en el visor o en la tabla de arriba. El despiece y el costo NO dependen
+          del armado.
         </p>
       </section>
+
+      {/* ---- Ensambles detectados ---- */}
+      <section>
+        <h3 className="text-[15px] font-medium mb-2">Ensambles detectados</h3>
+        <div className="card overflow-x-auto">
+          <table className="w-full text-[13px] min-w-[380px]">
+            <thead>
+              <tr className="bg-[#F3F5F1] border-b border-rule text-left">
+                <th className="lbl px-3 py-2 font-medium">Espiga</th>
+                <th className="lbl px-2 py-2 font-medium">Mortaja</th>
+                <th className="lbl px-2 py-2 text-right font-medium">Holgura</th>
+                <th className="lbl px-3 py-2 text-right font-medium">Entra a</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ensambles.ensambles.map((e, i) => {
+                const lg = ensambles.lenguetas[e.piezaId]?.[e.lengueta];
+                return (
+                  <tr
+                    key={i}
+                    onClick={() => onSelect(e.piezaId)}
+                    className={`border-b border-rule/60 last:border-0 cursor-pointer ${
+                      selected === e.piezaId ? "bg-pineLight" : ""
+                    }`}
+                  >
+                    <td className="px-3 py-1.5">
+                      {e.piezaId}
+                      {lg && <span className="num text-[11px] text-muted ml-1.5">{lg.ancho} mm</span>}
+                    </td>
+                    <td className="num px-2 py-1.5 text-[12px] text-muted">#{e.mortaja}</td>
+                    <td className="num px-2 py-1.5 text-right">
+                      {e.holgura.toFixed(1)}
+                      <span className="text-[11px] text-muted ml-0.5">mm</span>
+                    </td>
+                    <td className="num px-3 py-1.5 text-right">
+                      {e.angulo ? `${e.angulo}°` : "escuadra"}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!ensambles.ensambles.length && (
+                <tr>
+                  <td colSpan={4} className="px-3 py-2 text-[12px] text-muted">
+                    No se emparejo ninguna espiga con las mortajas del panel.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {ensambles.notas.map((n, i) => (
+          <p key={i} className="text-[12px] text-muted mt-2">
+            {n}
+          </p>
+        ))}
+      </section>
+
+      {/* ---- Ajuste de una pieza ---- */}
+      {piezaSel && !esPanelSel && (
+        <section>
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="text-[15px] font-medium">Ajustar {piezaSel.id}</h3>
+            <div className="flex gap-1.5">
+              <button
+                className="btn"
+                onClick={() => setAjuste(piezaSel.id, { voltear: !ajusteSel.voltear })}
+              >
+                Voltear
+              </button>
+              <button className="btn" onClick={() => limpiarAjuste(piezaSel.id)}>
+                Restaurar
+              </button>
+            </div>
+          </div>
+          <div className="card p-3 space-y-3">
+            <Rango label="Girar" v={ajusteSel.giro ?? 0} min={-180} max={180} u="°"
+              on={(v) => setAjuste(piezaSel.id, { giro: v })} />
+            <Rango label="Correr" v={ajusteSel.desliz ?? 0} min={-600} max={600} u="mm"
+              on={(v) => setAjuste(piezaSel.id, { desliz: v })} />
+            <Rango label="Acercar" v={ajusteSel.radio ?? 0} min={-400} max={400} u="mm"
+              on={(v) => setAjuste(piezaSel.id, { radio: v })} />
+            <Rango label="Subir" v={ajusteSel.z ?? 0} min={-400} max={400} u="mm"
+              on={(v) => setAjuste(piezaSel.id, { z: v })} />
+            <Rango label="Abrir" v={ajusteSel.inclinacion ?? 0} min={-45} max={45} u="°"
+              on={(v) => setAjuste(piezaSel.id, { inclinacion: v })} />
+            <Rango label="Rotar en plano" v={ajusteSel.giroLocal ?? 0} min={-180} max={180} u="°"
+              on={(v) => setAjuste(piezaSel.id, { giroLocal: v })} />
+          </div>
+          <p className="text-[12px] text-muted mt-2">
+            Son correcciones sobre lo que propuso el armador, no valores absolutos. Se guardan
+            por pieza y no afectan al despiece.
+          </p>
+        </section>
+      )}
 
       {/* ---- Referencia visual ---- */}
       <section className="space-y-3">

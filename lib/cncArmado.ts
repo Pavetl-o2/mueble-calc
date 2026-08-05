@@ -1,4 +1,5 @@
-import type { ContornoCnc, LecturaCnc, Pt } from "./cnc";
+import { analizarCanto, type ContornoCnc, type LecturaCnc, type Pt } from "./cnc";
+import { detectarEnsambles } from "./cncEnsambles";
 import { mkPart, resetIds, round } from "./typologies/helpers";
 import type { ModelResult, Part } from "./types";
 
@@ -50,6 +51,44 @@ export interface Colocacion {
   giroLocal: number;
   /** Voltearla de cara, por como venia acomodada en la hoja de corte. */
   espejo: boolean;
+  /**
+   * Corrimiento a lo largo de su propio eje, en mm. Sale de alinear su
+   * espiga con la mortaja: sin esto la pieza queda centrada en el lado,
+   * que casi nunca es donde va.
+   */
+  desliz: number;
+  /** De donde salio la colocacion, para poder decirlo en pantalla. */
+  fuente: "ensamble" | "simetria";
+}
+
+/** Correccion manual sobre lo que propuso el armador. Todo son deltas. */
+export interface AjustePieza {
+  giro?: number;
+  radio?: number;
+  desliz?: number;
+  z?: number;
+  inclinacion?: number;
+  giroLocal?: number;
+  /** Invierte el volteo que decidio la orientacion automatica. */
+  voltear?: boolean;
+}
+
+export const AJUSTE_VACIO: AjustePieza = {};
+
+/** Aplica los deltas del usuario sobre una colocacion propuesta. */
+export function aplicarAjuste(c: Colocacion, a?: AjustePieza): Colocacion {
+  if (!a) return c;
+  const g = (v: number | undefined) => ((v ?? 0) * Math.PI) / 180;
+  return {
+    ...c,
+    giro: c.giro + g(a.giro),
+    radio: c.radio + (a.radio ?? 0),
+    desliz: c.desliz + (a.desliz ?? 0),
+    z: c.z + (a.z ?? 0),
+    inclinacion: c.inclinacion + g(a.inclinacion),
+    giroLocal: c.giroLocal + g(a.giroLocal),
+    espejo: a.voltear ? !c.espejo : c.espejo,
+  };
 }
 
 export interface Orientacion {
@@ -99,14 +138,30 @@ export function orientarPieza(c: ContornoCnc): Orientacion {
   let giro = -ang;
   let pts = rot(c.ext, giro);
 
+  // Cual de los dos cantos largos es el de union: el que tiene espigas.
+  // Se prueban las dos posiciones y gana la que las encuentra. Contar
+  // vertices no basta: una pieza sencilla puede tener los mismos a cada
+  // lado y entonces queda de cabeza.
+  const volteada = rot(pts, Math.PI);
+  const arriba = analizarCanto(pts);
+  const abajo = analizarCanto(volteada);
+  const puntua = (k: ReturnType<typeof analizarCanto>) => (k ? k.salto : 0);
+
   const ys = pts.map((p) => p[1]);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  const h = y1 - y0 || 1;
-  const densidad = (lim: number) => pts.filter((p) => Math.abs(p[1] - lim) < h * 0.06).length;
-  if (densidad(y0) > densidad(y1)) {
+  const h = Math.max(...ys) - Math.min(...ys) || 1;
+
+  let voltear = puntua(abajo) > puntua(arriba);
+  if (!arriba && !abajo) {
+    // Sin espigas por ningun lado se cae al criterio anterior: el canto
+    // con mas detalle suele ser el que se une a algo.
+    const y0 = Math.min(...ys);
+    const y1 = Math.max(...ys);
+    const densidad = (lim: number) => pts.filter((p) => Math.abs(p[1] - lim) < h * 0.06).length;
+    voltear = densidad(y0) > densidad(y1);
+  }
+  if (voltear) {
     giro += Math.PI;
-    pts = rot(pts, Math.PI);
+    pts = volteada;
   }
 
   const ys2 = pts.map((p) => p[1]);
@@ -333,26 +388,60 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
     acostada: true,
     giroLocal: 0,
     espejo: false,
+    desliz: 0,
+    fuente: "ensamble",
   });
 
-  // Verticales: colgadas del panel por su canto superior y repartidas en
-  // n direcciones. Cada una se orienta primero en su propio plano, si no
-  // cada pata queda con un canto distinto contra la cubierta.
+  // Verticales: colgadas del panel por su canto superior. Si se pudo
+  // emparejar su espiga con una mortaja, la posicion sale de ahi; si no,
+  // se reparten por simetria como antes.
+  const ens = detectarEnsambles(l.piezas, panel, t);
+  const porPieza = new Map(ens.ensambles.map((e) => [e.piezaId, e]));
   const inc = (op.inclinacion * Math.PI) / 180;
+
   verticales.forEach((v, k) => {
     const o = orientarPieza(v);
+    const e = porPieza.get(v.id);
+    const m = e ? ens.mortajas.find((x) => x.idx === e.mortaja) : undefined;
+    const lg = e ? ens.lenguetas[v.id]?.[e.lengueta] : undefined;
+
+    let giro = (k / Math.max(1, n)) * Math.PI * 2;
+    let radio = op.radio;
+    let desliz = 0;
+    let fuente: Colocacion["fuente"] = "simetria";
+
+    if (m && lg) {
+      // La mortaja esta en una esquina y sirve a dos lados; se toma el
+      // que sigue en sentido antihorario, que es lo que arma el molinete.
+      const angEsq = Math.atan2(m.cy, m.cx);
+      const lado = Math.round((angEsq + Math.PI / 4) / (Math.PI / 2)) * (Math.PI / 2);
+      // Coordenadas de la mortaja en el marco del lado: normal y tangente.
+      const nx = Math.cos(lado);
+      const ny = Math.sin(lado);
+      radio = m.cx * nx + m.cy * ny;
+      const tang = -m.cx * ny + m.cy * nx;
+      // La espiga cae en x local; el origen de la pieza es su centro.
+      desliz = tang - (lg.x - o.ancho / 2);
+      giro = lado;
+      fuente = "ensamble";
+    }
+
     colocaciones.push({
       piezaId: v.id,
       rol: op.roles?.[v.id] ?? "vertical",
-      giro: (k / Math.max(1, n)) * Math.PI * 2,
-      radio: op.radio,
+      giro,
+      radio,
       z: op.alto - t,
       inclinacion: inc,
       acostada: false,
       giroLocal: o.giro,
       espejo: o.espejo,
+      desliz: Math.round(desliz),
+      fuente,
     });
   });
+
+  notas.push(...ens.notas);
 
   const iguales = verticales.every(
     (v) => Math.abs(v.areaMm2 - verticales[0].areaMm2) < verticales[0].areaMm2 * 0.05

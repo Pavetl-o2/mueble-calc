@@ -339,6 +339,74 @@ function r2(n: number) {
 }
 
 // ---------------------------------------------------------------
+// Analisis del canto superior
+//
+// Lo usan tanto la orientacion como la deteccion de espigas, y por eso
+// vive aqui: si cada una lo resolviera por su cuenta podrian discrepar
+// sobre cual canto es el de union.
+// ---------------------------------------------------------------
+
+/** Tramos de material que corta una horizontal a la altura y. */
+export function tramosEn(pts: Pt[], y: number): [number, number][] {
+  const cortes: number[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[(i + 1) % pts.length];
+    if (ay > y !== by > y) cortes.push(ax + ((bx - ax) * (y - ay)) / (by - ay));
+  }
+  cortes.sort((a, b) => a - b);
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < cortes.length; i += 2) out.push([cortes[i], cortes[i + 1]]);
+  return out;
+}
+
+export interface Canto {
+  /** Altura del hombro: donde el material se ensancha de golpe. */
+  hombro: number;
+  /** Cuanto sobresalen las espigas por encima del hombro. */
+  vuelo: number;
+  /** Tramos de las espigas, medidos a media altura. */
+  salientes: [number, number][];
+  /** Cuanto se ensancha al pasar el hombro. 1 = canto liso, sin espigas. */
+  salto: number;
+}
+
+/**
+ * Busca espigas en el canto SUPERIOR de un contorno ya orientado.
+ *
+ * Bajando desde el borde de arriba, el material cubierto da un salto al
+ * pasar el hombro: encima solo estan las espigas, debajo el cuerpo
+ * entero. Si no hay salto, el canto es liso y no tiene espigas.
+ */
+export function analizarCanto(pts: Pt[]): Canto | null {
+  const ys = pts.map((p) => p[1]);
+  const yMax = Math.max(...ys);
+  const alto = yMax - Math.min(...ys);
+  if (alto <= 0) return null;
+
+  const cubierto = (t: [number, number][]) => t.reduce((a, [p, q]) => a + (q - p), 0);
+  const arriba = tramosEn(pts, yMax - Math.max(0.5, alto * 0.002));
+  const base = cubierto(arriba);
+  if (!arriba.length || base <= 0) return null;
+
+  const paso = Math.max(0.5, alto / 400);
+  for (let d = paso; d < alto * 0.35; d += paso) {
+    const ancho = cubierto(tramosEn(pts, yMax - d));
+    if (ancho > base * 2.5) {
+      const hombro = yMax - d;
+      const vuelo = d;
+      return {
+        hombro,
+        vuelo,
+        salientes: tramosEn(pts, hombro + vuelo / 2),
+        salto: ancho / base,
+      };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------
 // Espesor
 // ---------------------------------------------------------------
 
