@@ -2,7 +2,7 @@
 
 import { Canvas } from "@react-three/fiber";
 import { Grid, OrbitControls, Edges } from "@react-three/drei";
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import type { ContornoCnc } from "@/lib/cnc";
 import type { Colocacion } from "@/lib/cncArmado";
@@ -38,7 +38,13 @@ function limpiar(pts: THREE.Vector2[], horario: boolean): THREE.Vector2[] {
   return out;
 }
 
-function geometriaDe(c: ContornoCnc, espesor: number): THREE.ExtrudeGeometry {
+/**
+ * Se extruye siempre a espesor 1 y el espesor real se aplica escalando en
+ * Z. Asi mover el control de espesor no reconstruye nada: antes cada
+ * cambio generaba geometrias nuevas para todas las piezas, y aunque se
+ * liberen, el churn acaba tirando el contexto de WebGL.
+ */
+function geometriaDe(c: ContornoCnc): THREE.ExtrudeGeometry {
   const cx = (c.bbox.x0 + c.bbox.x1) / 2;
   const cy = (c.bbox.y0 + c.bbox.y1) / 2;
   const v = (p: [number, number]) => new THREE.Vector2(p[0] - cx, p[1] - cy);
@@ -57,16 +63,16 @@ function geometriaDe(c: ContornoCnc, espesor: number): THREE.ExtrudeGeometry {
   // Un bisel de tamano cero hace correr el bucle una vez y devuelve las
   // tapas, con una geometria identica a la extrusion recta.
   const g = new THREE.ExtrudeGeometry(shape, {
-    depth: espesor,
+    depth: 1,
     bevelEnabled: true,
     bevelSize: 0,
     bevelThickness: 0,
     bevelOffset: 0,
     bevelSegments: 1,
   });
-  // La extrusion crece hacia +Z; se recentra para que el espesor quede
-  // repartido a ambos lados del plano de la pieza.
-  g.translate(0, 0, -espesor / 2);
+  // La extrusion crece hacia +Z; se recentra para que al escalar el
+  // espesor quede repartido a ambos lados del plano de la pieza.
+  g.translate(0, 0, -0.5);
   return g;
 }
 
@@ -81,10 +87,17 @@ function Malla({
   seleccionada: boolean;
   onSelect: (id: string | null) => void;
 }) {
-  const geo = useMemo(() => geometriaDe(contorno, espesor), [contorno, espesor]);
+  const geo = useMemo(() => geometriaDe(contorno), [contorno]);
+
+  // Al cambiar de archivo se generan geometrias nuevas. Sin liberar las
+  // viejas se acumulan en la GPU y acaban tirando el contexto de WebGL
+  // ("Context Lost"), que deja el visor congelado.
+  useEffect(() => () => geo.dispose(), [geo]);
+
   return (
     <mesh
       geometry={geo}
+      scale={[1, 1, espesor]}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(seleccionada ? null : contorno.id);
@@ -199,8 +212,32 @@ export default function CncViewer3D({
 
   const dist = Math.max(400, vista.extension * 1.9);
 
+  // El navegador puede tirar el contexto de WebGL por su cuenta (cambio de
+  // GPU, suspension, demasiados canvas). Sin avisar, el visor se queda
+  // congelado y parece que la app se rompio.
+  const [contextoPerdido, setContextoPerdido] = useState(false);
+
+  if (contextoPerdido) {
+    return (
+      <div className="h-full grid place-items-center p-6 text-center">
+        <div>
+          <p className="text-[13px] text-ink">Se perdio el contexto 3D del navegador.</p>
+          <p className="text-[12px] text-muted mt-1">
+            Recarga la pagina para volver a dibujar. El despiece y el costo no se ven afectados.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Canvas
+      onCreated={({ gl }) => {
+        gl.domElement.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          setContextoPerdido(true);
+        });
+      }}
       shadows={false}
       dpr={[1, 2]}
       // near y far ajustados al tamano de la escena. Con el rango por

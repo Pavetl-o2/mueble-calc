@@ -26,6 +26,7 @@ necesita**: se procesa en tu navegador.
 | `OPENROUTER_API_KEY` | Llave de OpenRouter. Si está, tiene prioridad. |
 | `OPENROUTER_MODEL` | Modelo, p. ej. `moonshotai/kimi-k3`. **Debe aceptar imágenes.** |
 | `OPENROUTER_SITE_URL` | Opcional, para atribuir el tráfico a tu app. |
+| `OPENROUTER_MAX_TOKENS` | Opcional, por defecto 4000. Súbelo si el modelo devuelve respuestas vacías. |
 | `ANTHROPIC_API_KEY` | Alternativa: API de Claude directo. |
 | `ANTHROPIC_MODEL` | Opcional, por defecto `claude-sonnet-5`. |
 

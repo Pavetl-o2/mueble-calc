@@ -31,6 +31,20 @@ export type RespuestaLlm =
 const MODELO_OPENROUTER = "moonshotai/kimi-k3";
 const MODELO_ANTHROPIC = "claude-sonnet-5";
 
+/**
+ * Holgado a proposito. Las respuestas que se piden son JSON corto, pero
+ * un modelo de razonamiento gasta tokens pensando ANTES de escribirlas,
+ * y si se queda corto devuelve la respuesta vacia con finish_reason
+ * "length" en vez de un error claro.
+ */
+const MAX_TOKENS_DEFECTO = 4000;
+
+function maxTokens(pedido?: number): number {
+  const env = Number(process.env.OPENROUTER_MAX_TOKENS);
+  if (Number.isFinite(env) && env > 0) return Math.round(env);
+  return pedido ?? MAX_TOKENS_DEFECTO;
+}
+
 export function proveedorActivo(): { proveedor: Proveedor; modelo: string } | null {
   if (process.env.OPENROUTER_API_KEY) {
     return {
@@ -87,7 +101,7 @@ async function viaOpenRouter(req: PeticionVision, modelo: string): Promise<Respu
     },
     body: JSON.stringify({
       model: modelo,
-      max_tokens: req.maxTokens ?? 1500,
+      max_tokens: maxTokens(req.maxTokens),
       messages: [
         {
           role: "user",
@@ -117,9 +131,15 @@ async function viaOpenRouter(req: PeticionVision, modelo: string): Promise<Respu
     return { ok: false, status: 502, error: errorLegible(502, msg, modelo), detalle: String(msg).slice(0, 400) };
   }
 
-  const texto = data?.choices?.[0]?.message?.content;
-  if (typeof texto !== "string" || !texto.trim()) {
-    return { ok: false, status: 502, error: "El modelo no devolvio texto." };
+  const choice = data?.choices?.[0];
+  const texto = extraerTexto(choice);
+  if (!texto) {
+    return {
+      ok: false,
+      status: 502,
+      error: sinTextoPorQue(choice, modelo),
+      detalle: JSON.stringify(choice ?? data).slice(0, 400),
+    };
   }
   return { ok: true, texto, proveedor: "openrouter", modelo };
 }
@@ -134,7 +154,7 @@ async function viaAnthropic(req: PeticionVision, modelo: string): Promise<Respue
     },
     body: JSON.stringify({
       model: modelo,
-      max_tokens: req.maxTokens ?? 1500,
+      max_tokens: req.maxTokens ?? MAX_TOKENS_DEFECTO,
       messages: [
         {
           role: "user",
@@ -162,6 +182,59 @@ async function viaAnthropic(req: PeticionVision, modelo: string): Promise<Respue
     .join("\n");
   if (!texto.trim()) return { ok: false, status: 502, error: "El modelo no devolvio texto." };
   return { ok: true, texto, proveedor: "anthropic", modelo };
+}
+
+/**
+ * Saca el texto de una respuesta estilo OpenAI. No basta con leer
+ * message.content: cada proveedor de OpenRouter devuelve una forma
+ * distinta y varias son legitimas.
+ *   - content string: el caso normal.
+ *   - content array de partes: comun cuando el modelo es multimodal.
+ *   - content vacio y el texto en reasoning: los modelos de razonamiento
+ *     a veces ponen todo ahi, sobre todo si se quedaron sin tokens.
+ */
+function extraerTexto(choice: unknown): string | null {
+  const msg = (choice as { message?: Record<string, unknown> })?.message;
+  if (!msg) return null;
+
+  const partes: string[] = [];
+  const c = msg.content;
+  if (typeof c === "string") {
+    partes.push(c);
+  } else if (Array.isArray(c)) {
+    for (const p of c) {
+      if (typeof p === "string") partes.push(p);
+      else if (p && typeof p === "object") {
+        const t = (p as { text?: unknown }).text;
+        if (typeof t === "string") partes.push(t);
+      }
+    }
+  }
+
+  let texto = partes.join("").trim();
+  if (texto) return texto;
+
+  // Ultimo recurso: el JSON puede haber quedado dentro del razonamiento.
+  for (const k of ["reasoning", "reasoning_content"]) {
+    const r = msg[k];
+    if (typeof r === "string" && r.trim()) {
+      texto = r.trim();
+      break;
+    }
+  }
+  return texto || null;
+}
+
+/** Explica por que no vino texto, que es lo que hace falta para arreglarlo. */
+function sinTextoPorQue(choice: unknown, modelo: string): string {
+  const ch = choice as { finish_reason?: string; message?: { refusal?: string } } | undefined;
+  const fin = ch?.finish_reason;
+  if (ch?.message?.refusal) return `El modelo ${modelo} se nego a responder: ${ch.message.refusal}`;
+  if (fin === "length") {
+    return `El modelo ${modelo} se quedo sin tokens antes de contestar. Sube OPENROUTER_MAX_TOKENS (por defecto ${MAX_TOKENS_DEFECTO}); los modelos de razonamiento gastan muchos pensando.`;
+  }
+  if (fin === "content_filter") return `La respuesta de ${modelo} fue bloqueada por su filtro de contenido.`;
+  return `El modelo ${modelo} devolvio una respuesta vacia${fin ? ` (finish_reason: ${fin})` : ""}. Puede que no acepte imagenes.`;
 }
 
 /**

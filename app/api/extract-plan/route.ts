@@ -49,7 +49,6 @@ Responde SOLO con JSON valido, sin markdown:
     prompt,
     imagenB64: body.image,
     mediaType: body.mediaType || "image/png",
-    maxTokens: 1200,
   });
   if (!r.ok) {
     return NextResponse.json({ error: r.error, detail: r.detalle }, { status: r.status });
