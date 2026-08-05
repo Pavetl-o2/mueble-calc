@@ -95,19 +95,27 @@ const TIMEOUT_DEFECTO_MS = 45_000;
 /**
  * Control de razonamiento para OpenRouter.
  *
- * Los modelos de razonamiento gastan la mayor parte del tiempo pensando
- * antes de escribir la primera palabra, y esta tarea no lo necesita: es
- * extraer unos campos de una imagen, no resolver un problema. Con el
- * esfuerzo en bajo la latencia cae mucho.
+ * Viene apagado por defecto, y no es una preferencia estetica: leer una
+ * referencia es extraer cuatro campos de una imagen, no resolver un
+ * problema. Un modelo de razonamiento gasta casi todo su presupuesto
+ * pensando antes de escribir la primera palabra y puede agotarlo entero
+ * sin llegar a contestar, que se ve desde fuera como un timeout.
  *
- * OPENROUTER_REASONING acepta low | medium | high | off.
- * Los modelos que no soportan el parametro simplemente lo ignoran.
+ * Ojo con la diferencia: "exclude" esconde el razonamiento pero igual lo
+ * genera, asi que no ahorra ni un segundo. Lo que ahorra es no generarlo.
+ *
+ * OPENROUTER_REASONING acepta off | low | medium | high, o un numero de
+ * tokens como tope. Los modelos que no soportan el parametro lo ignoran.
  */
 function razonamiento(): Record<string, unknown> {
-  const v = (process.env.OPENROUTER_REASONING || "low").toLowerCase();
-  if (v === "off" || v === "false") return { reasoning: { enabled: false } };
-  if (v === "medium" || v === "high") return { reasoning: { effort: v } };
-  return { reasoning: { effort: "low" } };
+  const v = (process.env.OPENROUTER_REASONING || "off").toLowerCase().trim();
+  if (!v || v === "off" || v === "false" || v === "0") {
+    return { reasoning: { enabled: false } };
+  }
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return { reasoning: { max_tokens: Math.round(n) } };
+  if (v === "low" || v === "medium" || v === "high") return { reasoning: { effort: v } };
+  return { reasoning: { enabled: false } };
 }
 
 function presupuestoMs(): number {
@@ -165,6 +173,8 @@ export interface Diagnostico {
   llave: { puesta: boolean; largo: number; prefijo: string };
   maxTokens: number;
   timeoutMs: number;
+  /** Como quedo configurado el razonamiento, que es lo que mas pesa en la latencia. */
+  razonamiento: unknown;
   baseUrl: string;
   /** Resultado de una llamada barata al proveedor, sin gastar modelo. */
   conectividad: { ok: boolean; ms: number; detalle: string };
@@ -193,6 +203,7 @@ export async function diagnosticar(): Promise<Diagnostico> {
     llave: { puesta: !!key, largo: key.length, prefijo: key.slice(0, 7) },
     maxTokens: maxTokens(),
     timeoutMs: presupuestoMs(),
+    razonamiento: razonamiento().reasoning,
     baseUrl: activo?.proveedor === "anthropic" ? "https://api.anthropic.com" : base,
     conectividad: { ok: false, ms: 0, detalle: "no se intento" },
     generacion: { ok: false, ms: 0, detalle: "no se intento" },
@@ -289,7 +300,9 @@ async function probarGeneracion(activo: {
         },
         body: JSON.stringify({
           model: activo.modelo,
-          max_tokens: 16,
+          // 64 y no 16: con un presupuesto muy corto, cualquier modelo que
+          // piense algo se lo gasta entero y parece que no sabe contestar.
+          max_tokens: 64,
           ...razonamiento(),
           messages: [{ role: "user", content: "Responde solo: ok" }],
         }),
@@ -297,17 +310,25 @@ async function probarGeneracion(activo: {
       const cuerpo = await res.text();
       const ms = Date.now() - t0;
       if (!res.ok) return { ok: false, ms, detalle: `HTTP ${res.status}: ${cuerpo.slice(0, 200)}` };
-      let texto = "";
+      let r: { texto: string; fuente: string } | null = null;
       try {
-        texto = extraerTexto(JSON.parse(cuerpo)?.choices?.[0]) ?? "";
+        r = extraerTextoConFuente(JSON.parse(cuerpo)?.choices?.[0]);
       } catch {
         /* respuesta rara */
       }
-      return {
-        ok: !!texto,
-        ms,
-        detalle: texto ? `respondio "${texto.slice(0, 40)}"` : `sin texto: ${cuerpo.slice(0, 200)}`,
-      };
+      if (!r) return { ok: false, ms, detalle: `sin texto: ${cuerpo.slice(0, 200)}` };
+      if (r.fuente === "reasoning") {
+        // Contesto, pero solo pensando: el campo content vino vacio. Con
+        // una tarea mas grande se le va a acabar el presupuesto pensando.
+        return {
+          ok: false,
+          ms,
+          detalle:
+            `el modelo solo devolvio razonamiento, content vino vacio ("${r.texto.slice(0, 60)}"). ` +
+            `Apaga el razonamiento con OPENROUTER_REASONING=off o usa un modelo sin razonamiento.`,
+        };
+      }
+      return { ok: true, ms, detalle: `respondio "${r.texto.slice(0, 40)}"` };
     }
 
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -320,7 +341,7 @@ async function probarGeneracion(activo: {
       },
       body: JSON.stringify({
         model: activo.modelo,
-        max_tokens: 16,
+        max_tokens: 64,
         messages: [{ role: "user", content: "Responde solo: ok" }],
       }),
     });
@@ -463,6 +484,18 @@ async function viaAnthropic(
  *     a veces ponen todo ahi, sobre todo si se quedaron sin tokens.
  */
 function extraerTexto(choice: unknown): string | null {
+  return extraerTextoConFuente(choice)?.texto ?? null;
+}
+
+/**
+ * Igual que extraerTexto, pero dice de donde salio. Importa: si el texto
+ * vino de "reasoning" es que el modelo se quedo pensando y nunca emitio
+ * respuesta, aunque por rescate acabemos teniendo algo que leer. Es la
+ * senal de que va a agotar el presupuesto en cuanto la tarea crezca.
+ */
+function extraerTextoConFuente(
+  choice: unknown
+): { texto: string; fuente: "content" | "reasoning" } | null {
   const msg = (choice as { message?: Record<string, unknown> })?.message;
   if (!msg) return null;
 
@@ -480,18 +513,15 @@ function extraerTexto(choice: unknown): string | null {
     }
   }
 
-  let texto = partes.join("").trim();
-  if (texto) return texto;
+  const texto = partes.join("").trim();
+  if (texto) return { texto, fuente: "content" };
 
   // Ultimo recurso: el JSON puede haber quedado dentro del razonamiento.
   for (const k of ["reasoning", "reasoning_content"]) {
     const r = msg[k];
-    if (typeof r === "string" && r.trim()) {
-      texto = r.trim();
-      break;
-    }
+    if (typeof r === "string" && r.trim()) return { texto: r.trim(), fuente: "reasoning" };
   }
-  return texto || null;
+  return null;
 }
 
 /** Explica por que no vino texto, que es lo que hace falta para arreglarlo. */

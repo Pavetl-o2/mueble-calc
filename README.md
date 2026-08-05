@@ -28,7 +28,7 @@ necesita**: se procesa en tu navegador.
 | `OPENROUTER_SITE_URL` | Opcional, para atribuir el tráfico a tu app. |
 | `OPENROUTER_MAX_TOKENS` | Opcional, por defecto 4000. Súbelo si el modelo devuelve respuestas vacías. |
 | `LLM_TIMEOUT_MS` | Opcional, por defecto 45000. Debe quedar por debajo del límite de duración de tu plan. |
-| `OPENROUTER_REASONING` | Opcional, por defecto `low`. `low`/`medium`/`high`/`off`. Bájalo si el modelo tarda demasiado. |
+| `OPENROUTER_REASONING` | Opcional, **apagado** por defecto. `off`/`low`/`medium`/`high` o un número de tokens. |
 | `ANTHROPIC_API_KEY` | Alternativa: API de Claude directo. |
 | `ANTHROPIC_MODEL` | Opcional, por defecto `claude-sonnet-5`. |
 
@@ -43,6 +43,11 @@ activos, si la llave está puesta (nunca la muestra), y hace dos sondas:
   internet.
 - `generacion`: unos pocos tokens de texto con el modelo configurado. Es la prueba
   decisiva — si `conectividad` va bien y `generacion` no, el problema es el modelo.
+
+Un caso que conviene reconocer: si `generacion` reporta que el modelo **solo devolvió
+razonamiento**, es un modelo que piensa antes de escribir y se está gastando el
+presupuesto entero pensando. Desde fuera se ve como un timeout. Se arregla con
+`OPENROUTER_REASONING=off` o cambiando a un modelo sin razonamiento.
 
 Con eso se separan los casos que desde el navegador se ven idénticos: llave mala,
 sin salida a internet, y modelo lento.
