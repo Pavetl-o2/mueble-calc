@@ -6,7 +6,7 @@ import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
 import { leerCorteDxf } from "../lib/cnc";
 import { despieceCnc, opcionesSugeridas, panelDe, proponerArmado } from "../lib/cncArmado";
-import { extraerJson, proveedorActivo } from "../lib/llm";
+import { extraerJson, imagenDemasiadoGrande, IMAGEN_MAX_BYTES, proveedorActivo } from "../lib/llm";
 import { readFileSync, existsSync } from "fs";
 
 let fallas = 0;
@@ -281,6 +281,15 @@ console.log("\n=== PROVEEDOR DE MODELO ===");
   chk(extraerJson("no hay json aqui") === null, "llm: deberia devolver null sin JSON");
   chk(extraerJson("{roto: sin comillas") === null, "llm: deberia devolver null con JSON invalido");
   console.log("extraccion de JSON: ok");
+
+  // Limite de imagen: base64 pesa ~4/3 del binario, y pasado el tope la
+  // plataforma corta la peticion antes de que la funcion pueda contestar.
+  const b64De = (bytes: number) => "A".repeat(Math.ceil((bytes * 4) / 3));
+  chk(!imagenDemasiadoGrande(b64De(500_000)), "llm: 500 KB no deberia rechazarse");
+  chk(!imagenDemasiadoGrande(b64De(IMAGEN_MAX_BYTES - 10_000)), "llm: justo bajo el tope no deberia rechazarse");
+  chk(imagenDemasiadoGrande(b64De(IMAGEN_MAX_BYTES + 100_000)), "llm: pasado el tope deberia rechazarse");
+  chk(IMAGEN_MAX_BYTES < 4_500_000, "llm: el tope debe quedar bajo el limite de cuerpo de Vercel");
+  console.log(`limite de imagen: ok (tope ${Math.round(IMAGEN_MAX_BYTES / 1e6)} MB)`);
 }
 
 console.log(fallas === 0 ? "\n>>> TODAS LAS PRUEBAS PASARON" : `\n>>> ${fallas} FALLAS`);

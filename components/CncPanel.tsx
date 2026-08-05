@@ -9,7 +9,20 @@ import {
   type OpcionesArmado,
   type Rol,
 } from "@/lib/cncArmado";
+import { postJson, prepararImagen, type ImagenLista } from "@/lib/imagen";
 import type { Catalog } from "@/lib/types";
+
+interface Respuesta {
+  roles?: Record<string, string>;
+  alto?: number;
+  inclinacion?: number;
+  radio?: number;
+  familia?: string;
+  confianza?: string;
+  observaciones?: string[];
+  modelo?: string;
+  proveedor?: string;
+}
 
 export interface EstadoCnc {
   lectura: LecturaCnc;
@@ -36,7 +49,7 @@ export default function CncPanel({
   const [archivo, setArchivo] = useState("");
 
   // Referencia visual
-  const [img, setImg] = useState<string | null>(null);
+  const [img, setImg] = useState<ImagenLista | null>(null);
   const [imgBusy, setImgBusy] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [imgNotas, setImgNotas] = useState<string[]>([]);
@@ -74,30 +87,24 @@ export default function CncPanel({
     setImgBusy(true);
     setImgError(null);
     try {
-      const [meta, b64] = img.split(",");
-      const mediaType = meta.match(/data:(.*?);/)?.[1] ?? "image/png";
-      const res = await fetch("/api/cnc-armado", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          image: b64,
-          mediaType,
-          espesor: estado.asig.espesor,
-          anguloDetectado: estado.lectura.ranuras.find((r) => r.anguloGrados)?.anguloGrados,
-          piezas: estado.lectura.piezas.map((p) => ({
-            id: p.id,
-            largo: p.largo,
-            ancho: p.ancho,
-            areaM2: p.areaMm2 / 1e6,
-            huecos: p.huecos.length,
-          })),
-        }),
+      const r = await postJson<Respuesta>("/api/cnc-armado", {
+        image: img.dataUrl.split(",")[1],
+        mediaType: img.mediaType,
+        espesor: estado.asig.espesor,
+        anguloDetectado: estado.lectura.ranuras.find((x) => x.anguloGrados)?.anguloGrados,
+        piezas: estado.lectura.piezas.map((p) => ({
+          id: p.id,
+          largo: p.largo,
+          ancho: p.ancho,
+          areaM2: p.areaMm2 / 1e6,
+          huecos: p.huecos.length,
+        })),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setImgError(data.error ?? "No se pudo leer la referencia.");
+      if (!r.ok) {
+        setImgError(r.error);
         return;
       }
+      const data = r.data;
       onEstado({
         ...estado,
         armar: true,
@@ -113,8 +120,6 @@ export default function CncPanel({
         ...(data.observaciones ?? []),
         ...(data.modelo ? [`Leido con ${data.modelo} via ${data.proveedor}.`] : []),
       ]);
-    } catch (e) {
-      setImgError(String(e));
     } finally {
       setImgBusy(false);
     }
@@ -402,12 +407,15 @@ export default function CncPanel({
               type="file"
               accept="image/*"
               className="sr-only"
-              onChange={(e) => {
+              onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
-                const r = new FileReader();
-                r.onload = () => setImg(String(r.result));
-                r.readAsDataURL(f);
+                setImgError(null);
+                try {
+                  setImg(await prepararImagen(f));
+                } catch (err) {
+                  setImgError(String(err));
+                }
               }}
             />
           </label>
@@ -416,8 +424,19 @@ export default function CncPanel({
           </button>
         </div>
         {img && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={img} alt="Referencia" className="max-h-[150px] rounded border border-rule" />
+          <div className="flex items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={img.dataUrl}
+              alt="Referencia"
+              className="max-h-[150px] rounded border border-rule"
+            />
+            <span className="num text-[11px] text-muted">
+              {img.ancho > 0 && `${img.ancho}×${img.alto} · `}
+              {Math.round(img.bytes / 1024)} KB
+              {img.reducida && " (reducida)"}
+            </span>
+          </div>
         )}
         {imgError && (
           <div className="card border-bronze bg-bronzeLight p-3 text-[13px] text-bronze">

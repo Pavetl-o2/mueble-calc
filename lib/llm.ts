@@ -45,6 +45,19 @@ function maxTokens(pedido?: number): number {
   return pedido ?? MAX_TOKENS_DEFECTO;
 }
 
+/**
+ * Tope de imagen en bytes de base64. Una funcion serverless en Vercel
+ * corta el cuerpo de la peticion en 4.5 MB, y ahi la respuesta ya no es
+ * JSON sino una pagina de error de la plataforma. Se rechaza antes, con
+ * un mensaje que se pueda leer. El cliente ademas reduce la imagen, asi
+ * que llegar a este limite ya deberia ser raro.
+ */
+export const IMAGEN_MAX_BYTES = 3_500_000;
+
+export function imagenDemasiadoGrande(b64: string): boolean {
+  return Math.round((b64.length * 3) / 4) > IMAGEN_MAX_BYTES;
+}
+
 export function proveedorActivo(): { proveedor: Proveedor; modelo: string } | null {
   if (process.env.OPENROUTER_API_KEY) {
     return {

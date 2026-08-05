@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { leerDxf, proponerEnvolvente, type DxfLectura } from "@/lib/dxf";
 import { cloneSpec, getPreset, presets, type FurnitureSpec } from "@/lib/spec";
+import { postJson, prepararImagen, type ImagenLista } from "@/lib/imagen";
 
 type Destino = "ancho" | "alto" | "prof" | "";
 
@@ -20,7 +21,7 @@ export default function ImportPanel({
   const [razon, setRazon] = useState("");
 
   // Ruta de imagen
-  const [img, setImg] = useState<string | null>(null);
+  const [img, setImg] = useState<ImagenLista | null>(null);
   const [imgBusy, setImgBusy] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [imgSpec, setImgSpec] = useState<{
@@ -68,18 +69,12 @@ export default function ImportPanel({
     setImgBusy(true);
     setImgError(null);
     try {
-      const [meta, b64] = img.split(",");
-      const mediaType = meta.match(/data:(.*?);/)?.[1] ?? "image/png";
-      const res = await fetch("/api/extract-plan", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ image: b64, mediaType }),
+      const r = await postJson<NonNullable<typeof imgSpec>>("/api/extract-plan", {
+        image: img.dataUrl.split(",")[1],
+        mediaType: img.mediaType,
       });
-      const data = await res.json();
-      if (!res.ok) setImgError(data.error ?? "No se pudo leer el plano.");
-      else setImgSpec(data);
-    } catch (e) {
-      setImgError(String(e));
+      if (!r.ok) setImgError(r.error);
+      else setImgSpec(r.data);
     } finally {
       setImgBusy(false);
     }
@@ -265,13 +260,11 @@ export default function ImportPanel({
                 if (!f) return;
                 setImgSpec(null);
                 setImgError(null);
-                const url = await new Promise<string>((res, rej) => {
-                  const r = new FileReader();
-                  r.onload = () => res(String(r.result));
-                  r.onerror = () => rej(new Error("No se pudo leer el archivo."));
-                  r.readAsDataURL(f);
-                });
-                setImg(url);
+                try {
+                  setImg(await prepararImagen(f));
+                } catch (err) {
+                  setImgError(String(err));
+                }
               }}
             />
           </label>
@@ -281,12 +274,19 @@ export default function ImportPanel({
         </div>
 
         {img && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={img}
-            alt="Plano cargado"
-            className="max-h-56 rounded border border-rule bg-panel object-contain"
-          />
+          <div className="space-y-1">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={img.dataUrl}
+              alt="Plano cargado"
+              className="max-h-56 rounded border border-rule bg-panel object-contain"
+            />
+            <div className="num text-[11px] text-muted">
+              {img.ancho > 0 && `${img.ancho}×${img.alto} · `}
+              {Math.round(img.bytes / 1024)} KB
+              {img.reducida && " (reducida para enviarla)"}
+            </div>
+          </div>
         )}
 
         {imgError && (

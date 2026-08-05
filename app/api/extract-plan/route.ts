@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { presets } from "@/lib/spec";
-import { extraerJson, FALTA_LLAVE, pedirVision, proveedorActivo } from "@/lib/llm";
+import {
+  extraerJson,
+  FALTA_LLAVE,
+  imagenDemasiadoGrande,
+  IMAGEN_MAX_BYTES,
+  pedirVision,
+  proveedorActivo,
+} from "@/lib/llm";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -25,6 +32,14 @@ export async function POST(req: Request) {
   }
   if (!body.image) {
     return NextResponse.json({ error: "No se recibio ninguna imagen." }, { status: 400 });
+  }
+  if (imagenDemasiadoGrande(body.image)) {
+    return NextResponse.json(
+      {
+        error: `La imagen pesa mas de ${Math.round(IMAGEN_MAX_BYTES / 1e6)} MB una vez codificada y no cabe en la peticion. Usa una mas chica.`,
+      },
+      { status: 413 }
+    );
   }
 
   const lista = presets.map((p) => `- ${p.id}: ${p.nombre}. ${p.descripcion}`).join("\n");
