@@ -36,12 +36,96 @@ export interface Colocacion {
   giro: number;
   /** Distancia de la pieza al eje vertical, en mm. */
   radio: number;
-  /** Altura del centro de la pieza, en mm. */
+  /**
+   * Altura en mm. Para el panel es la de su plano medio; para una pieza
+   * vertical, la de su CANTO SUPERIOR, que es el que topa con el panel y
+   * ademas hace de eje al inclinarla.
+   */
   z: number;
   /** Inclinacion respecto a la vertical, en radianes. 0 = parada a plomo. */
   inclinacion: number;
   /** Acostada (panel horizontal) o parada (pieza vertical). */
   acostada: boolean;
+  /** Giro dentro de su propio plano para dejarla en posicion de armado. */
+  giroLocal: number;
+  /** Voltearla de cara, por como venia acomodada en la hoja de corte. */
+  espejo: boolean;
+}
+
+export interface Orientacion {
+  /** Radianes a girar el contorno para dejarlo en posicion de armado. */
+  giro: number;
+  /** Si hay que reflejarlo en X despues de girarlo. */
+  espejo: boolean;
+  ancho: number;
+  alto: number;
+}
+
+/**
+ * Deja una pieza en su posicion de armado dentro de su propio plano.
+ *
+ * Hace falta porque en la hoja de corte las piezas vienen giradas y
+ * espejeadas para aprovechar el tablero: cuatro patas identicas pueden
+ * venir en cuatro orientaciones distintas. Si se levantan tal como
+ * vienen, cada una acaba con un canto distinto contra la cubierta y el
+ * mueble no cierra.
+ *
+ * Tres pasos:
+ *   1. La arista recta mas larga se pone horizontal. En una pieza de
+ *      tablero suele ser el canto que topa con otra pieza.
+ *   2. De los dos cantos largos se elige el que tiene mas detalle
+ *      (lenguetas, escalones) como cara de union: el canto liso es el
+ *      que apoya en el piso.
+ *   3. Se refleja si hace falta para que el pie caiga siempre del mismo
+ *      lado. Reflejar una pieza plana es voltearla de cara, que en un
+ *      tablero es legitimo.
+ */
+export function orientarPieza(c: ContornoCnc): Orientacion {
+  let mejor = 0;
+  let ang = 0;
+  for (let i = 0; i < c.ext.length - 1; i++) {
+    const dx = c.ext[i + 1][0] - c.ext[i][0];
+    const dy = c.ext[i + 1][1] - c.ext[i][1];
+    const d = Math.hypot(dx, dy);
+    if (d > mejor) {
+      mejor = d;
+      ang = Math.atan2(dy, dx);
+    }
+  }
+
+  const rot = (pts: Pt[], a: number): Pt[] =>
+    pts.map(([x, y]) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)] as Pt);
+
+  let giro = -ang;
+  let pts = rot(c.ext, giro);
+
+  const ys = pts.map((p) => p[1]);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  const h = y1 - y0 || 1;
+  const densidad = (lim: number) => pts.filter((p) => Math.abs(p[1] - lim) < h * 0.06).length;
+  if (densidad(y0) > densidad(y1)) {
+    giro += Math.PI;
+    pts = rot(pts, Math.PI);
+  }
+
+  const ys2 = pts.map((p) => p[1]);
+  const yMin = Math.min(...ys2);
+  const xs = pts.map((p) => p[0]);
+  const cxb = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const pie = pts.filter((p) => p[1] < yMin + h * 0.05);
+  const pieX = pie.length ? pie.reduce((a, p) => a + p[0], 0) / pie.length : cxb;
+  const espejo = pieX < cxb;
+  if (espejo) pts = pts.map(([x, y]) => [-x, y] as Pt);
+
+  const fx = pts.map((p) => p[0]);
+  const fy = pts.map((p) => p[1]);
+  return {
+    giro,
+    espejo,
+    ancho: Math.max(...fx) - Math.min(...fx),
+    alto: Math.max(...fy) - Math.min(...fy),
+  };
 }
 
 export interface Armado {
@@ -247,20 +331,26 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
     z: op.alto - t / 2,
     inclinacion: 0,
     acostada: true,
+    giroLocal: 0,
+    espejo: false,
   });
 
-  // Verticales: paradas, repartidas en n direcciones, inclinadas hacia
-  // afuera el angulo que delataron las mortajas.
+  // Verticales: colgadas del panel por su canto superior y repartidas en
+  // n direcciones. Cada una se orienta primero en su propio plano, si no
+  // cada pata queda con un canto distinto contra la cubierta.
   const inc = (op.inclinacion * Math.PI) / 180;
   verticales.forEach((v, k) => {
+    const o = orientarPieza(v);
     colocaciones.push({
       piezaId: v.id,
       rol: op.roles?.[v.id] ?? "vertical",
       giro: (k / Math.max(1, n)) * Math.PI * 2,
       radio: op.radio,
-      z: op.alto / 2,
+      z: op.alto - t,
       inclinacion: inc,
       acostada: false,
+      giroLocal: o.giro,
+      espejo: o.espejo,
     });
   });
 

@@ -44,14 +44,42 @@ function limpiar(pts: THREE.Vector2[], horario: boolean): THREE.Vector2[] {
  * cambio generaba geometrias nuevas para todas las piezas, y aunque se
  * liberen, el churn acaba tirando el contexto de WebGL.
  */
-function geometriaDe(c: ContornoCnc): THREE.ExtrudeGeometry {
-  const cx = (c.bbox.x0 + c.bbox.x1) / 2;
-  const cy = (c.bbox.y0 + c.bbox.y1) / 2;
+/**
+ * Origen local de la geometria:
+ *   - acostada: el centro del contorno, para el panel.
+ *   - parada: el medio de su CANTO SUPERIOR, que es el que topa con el
+ *     panel y ademas hace de eje al inclinar la pieza. Asi basta con
+ *     decir donde va ese punto y la pieza cuelga sola.
+ *
+ * La orientacion de armado se hornea aqui, en los puntos, en vez de
+ * componerla como otra rotacion mas: mantiene el arbol de grupos corto y
+ * evita depender del orden en que se apliquen.
+ */
+function geometriaDe(c: ContornoCnc, o?: { giroLocal: number; espejo: boolean }): THREE.ExtrudeGeometry {
+  let ext = c.ext;
+  let huecos = c.huecos;
+
+  if (o) {
+    const ca = Math.cos(o.giroLocal);
+    const sa = Math.sin(o.giroLocal);
+    const s = o.espejo ? -1 : 1;
+    const tr = (pts: [number, number][]): [number, number][] =>
+      pts.map(([x, y]) => [s * (x * ca - y * sa), x * sa + y * ca]);
+    ext = tr(ext);
+    huecos = huecos.map(tr);
+  }
+
+  const xs = ext.map((p) => p[0]);
+  const ys = ext.map((p) => p[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  // Parada: el origen queda en el canto de arriba. Acostada: en el centro.
+  const cy = o ? Math.max(...ys) : (Math.min(...ys) + Math.max(...ys)) / 2;
   const v = (p: [number, number]) => new THREE.Vector2(p[0] - cx, p[1] - cy);
 
-  // Exterior antihorario, huecos horarios.
-  const shape = new THREE.Shape(limpiar(c.ext.map(v), false));
-  for (const h of c.huecos) {
+  // Exterior antihorario, huecos horarios. limpiar() normaliza el sentido,
+  // que hace falta porque reflejar la pieza lo invierte.
+  const shape = new THREE.Shape(limpiar(ext.map(v), false));
+  for (const h of huecos) {
     shape.holes.push(new THREE.Path(limpiar(h.map(v), true)));
   }
 
@@ -79,15 +107,20 @@ function geometriaDe(c: ContornoCnc): THREE.ExtrudeGeometry {
 function Malla({
   contorno,
   espesor,
+  orientacion,
   seleccionada,
   onSelect,
 }: {
   contorno: ContornoCnc;
   espesor: number;
+  orientacion?: { giroLocal: number; espejo: boolean };
   seleccionada: boolean;
   onSelect: (id: string | null) => void;
 }) {
-  const geo = useMemo(() => geometriaDe(contorno), [contorno]);
+  const geo = useMemo(
+    () => geometriaDe(contorno, orientacion),
+    [contorno, orientacion?.giroLocal, orientacion?.espejo]
+  );
 
   // Al cambiar de archivo se generan geometrias nuevas. Sin liberar las
   // viejas se acumulan en la GPU y acaban tirando el contexto de WebGL
@@ -117,10 +150,12 @@ function Malla({
 /**
  * Compone la colocacion con grupos anidados en vez de angulos de Euler:
  * el orden queda explicito y no depende de la convencion que use three.
- * De adentro hacia afuera: se para la pieza, se gira un cuarto sobre su
- * propio eje para que su lado largo quede TANGENTE (si no, la pieza se
- * mete radialmente y cruza por el centro del mueble), se separa al radio
- * y por ultimo se gira a su posicion alrededor del eje vertical.
+ *
+ * De adentro hacia afuera: la pieza ya viene orientada y con su origen en
+ * el canto superior, se para (y se inclina) girando sobre ese canto, se
+ * gira un cuarto para que su lado largo quede TANGENTE (si no se mete
+ * radialmente y cruza el centro del mueble), se separa al radio y por
+ * ultimo se lleva a su posicion alrededor del eje vertical.
  */
 function PiezaColocada({
   contorno,
@@ -140,6 +175,7 @@ function PiezaColocada({
     <Malla
       contorno={contorno}
       espesor={espesor}
+      orientacion={c.acostada ? undefined : { giroLocal: c.giroLocal, espejo: c.espejo }}
       seleccionada={seleccionada}
       onSelect={onSelect}
     />

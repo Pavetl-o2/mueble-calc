@@ -5,7 +5,7 @@ import { defaultCatalog } from "../lib/catalog";
 import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
 import { leerCorteDxf } from "../lib/cnc";
-import { despieceCnc, opcionesSugeridas, panelDe, proponerArmado } from "../lib/cncArmado";
+import { despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
 import { extraerJson, imagenDemasiadoGrande, IMAGEN_MAX_BYTES, proveedorActivo } from "../lib/llm";
 import { readFileSync, existsSync } from "fs";
 
@@ -218,6 +218,75 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   );
   chk(arm.colocaciones.filter((c) => c.rol === "panel").length === 1, "cnc: deberia haber un solo panel");
   console.log(`armado: ${arm.colocaciones.length} colocaciones | ${arm.familia} | confianza ${arm.confianza}`);
+}
+
+{
+  // Cuatro copias de la MISMA pieza, giradas y espejeadas como las
+  // acomoda un nesting real. orientarPieza debe dejarlas todas iguales:
+  // si no, cada pata acaba con un canto distinto contra la cubierta.
+  const pieza: [number, number][] = [
+    // Barra horizontal con una pata colgando a la derecha, y dos
+    // lenguetas arriba que le dan mas detalle a ese canto.
+    [0, 0], [100, 0], [100, -200], [160, -200], [160, 0], [400, 0],
+    [400, 60], [300, 60], [300, 80], [260, 80], [260, 60],
+    [140, 60], [140, 80], [100, 80], [100, 60], [0, 60],
+  ];
+  const aristas = (pts: [number, number][]): [number, number, number, number][] =>
+    pts.map((p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      return [p[0], p[1], q[0], q[1]] as [number, number, number, number];
+    });
+  const mover = (
+    pts: [number, number][],
+    deg: number,
+    espejo: boolean,
+    dx: number,
+    dy: number
+  ): [number, number][] => {
+    const a = (deg * Math.PI) / 180;
+    return pts.map(([x, y]) => {
+      const sx = espejo ? -x : x;
+      return [sx * Math.cos(a) - y * Math.sin(a) + dx, sx * Math.sin(a) + y * Math.cos(a) + dy] as [number, number];
+    });
+  };
+
+  const variantes: [number, boolean][] = [[0, false], [90, false], [180, false], [37, true]];
+  const segs = variantes.flatMap(([deg, esp], i) =>
+    aristas(mover(pieza, deg, esp, 2000 * i, 0))
+  );
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  chk(l.piezas.length === 4, `orientacion: se esperaban 4 piezas, hay ${l.piezas.length}`);
+
+  // Perfil normalizado: altura minima del contorno en 16 columnas. Dos
+  // piezas iguales bien orientadas tienen el mismo perfil.
+  const perfil = (c: (typeof l.piezas)[number]) => {
+    const o = orientarPieza(c);
+    const ca = Math.cos(o.giro);
+    const sa = Math.sin(o.giro);
+    const s = o.espejo ? -1 : 1;
+    const pts = c.ext.map(([x, y]) => [s * (x * ca - y * sa), x * sa + y * ca] as [number, number]);
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    const x0 = Math.min(...xs);
+    const y0 = Math.min(...ys);
+    const w = Math.max(...xs) - x0 || 1;
+    const h = Math.max(...ys) - y0 || 1;
+    const cols = new Array(16).fill(1);
+    for (const [x, y] of pts) {
+      const k = Math.min(15, Math.floor(((x - x0) / w) * 16));
+      cols[k] = Math.min(cols[k], (y - y0) / h);
+    }
+    return cols;
+  };
+
+  const base = perfil(l.piezas[0]);
+  let peor = 0;
+  for (const c of l.piezas) {
+    const f = perfil(c);
+    peor = Math.max(peor, ...f.map((v, i) => Math.abs(v - base[i])));
+  }
+  chk(peor < 0.05, `orientacion: las piezas no quedaron alineadas (desviacion ${peor.toFixed(3)})`);
+  console.log(`orientacion: 4 variantes giradas/espejeadas normalizadas (desviacion ${peor.toFixed(3)})`);
 }
 
 {

@@ -105,19 +105,38 @@ export default function CncPanel({
         return;
       }
       const data = r.data;
+      // El dibujo manda sobre la imagen. Si las mortajas dieron el radio
+      // y el angulo, son medidas exactas y no se dejan sobrescribir por
+      // una estimacion hecha a ojo sobre un render. De la imagen solo se
+      // toma lo que el DXF no puede saber: el alto y los roles.
+      const hayMortajas = estado.lectura.piezas.some((p) => p.huecos.length > 0);
+      const hayAngulo = estado.lectura.ranuras.some((x) => x.anguloGrados != null);
+      const ignorado: string[] = [];
+      if (hayMortajas && data.radio != null && data.radio !== estado.opciones.radio) {
+        ignorado.push(`radio ${data.radio} mm (se usa ${estado.opciones.radio} mm de las mortajas)`);
+      }
+      if (hayAngulo && data.inclinacion != null && data.inclinacion !== estado.opciones.inclinacion) {
+        ignorado.push(
+          `apertura ${data.inclinacion}° (se usan ${estado.opciones.inclinacion}° del ancho de ranura)`
+        );
+      }
+
       onEstado({
         ...estado,
         armar: true,
         opciones: {
           alto: data.alto ?? estado.opciones.alto,
-          inclinacion: data.inclinacion ?? estado.opciones.inclinacion,
-          radio: data.radio ?? estado.opciones.radio,
+          inclinacion: hayAngulo
+            ? estado.opciones.inclinacion
+            : data.inclinacion ?? estado.opciones.inclinacion,
+          radio: hayMortajas ? estado.opciones.radio : data.radio ?? estado.opciones.radio,
           roles: data.roles as Record<string, Rol> | undefined,
         },
       });
       setImgNotas([
         ...(data.familia ? [`Familia: ${data.familia} (confianza ${data.confianza}).`] : []),
         ...(data.observaciones ?? []),
+        ...(ignorado.length ? [`Se ignoro de la imagen, por haber medida en el DXF: ${ignorado.join("; ")}.`] : []),
         ...(data.modelo ? [`Leido con ${data.modelo} via ${data.proveedor}.`] : []),
       ]);
     } finally {
