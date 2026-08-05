@@ -475,8 +475,10 @@ function inferirEspesor(piezas: ContornoCnc[]): {
   if (angulares.length) {
     notas.push(
       `Hay mortajas mas anchas que el espesor (${angulares
-        .map((a) => `${a.ancho} mm`)
-        .join(", ")}). Eso indica piezas que entran en angulo, no a escuadra.`
+        .map((a) => `${a.ancho} mm, equivalente a ${a.anguloGrados}°`)
+        .join("; ")}). Eso dice que la ESPIGA entra en angulo, no que el tablero vaya inclinado: ` +
+        `en flat-pack casi siempre se consigue cortando el hombro en diagonal con la pieza a plomo. ` +
+        `Por eso el armado arranca con apertura 0; subela si tu diseno de verdad lleva las piezas inclinadas.`
     );
   }
 

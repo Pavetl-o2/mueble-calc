@@ -219,6 +219,27 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   );
   chk(arm.colocaciones.filter((c) => c.rol === "panel").length === 1, "cnc: deberia haber un solo panel");
   console.log(`armado: ${arm.colocaciones.length} colocaciones | ${arm.familia} | confianza ${arm.confianza}`);
+
+  // La apertura arranca en cero: una ranura ancha describe la espiga, no
+  // la inclinacion del tablero, y en flat-pack las piezas van a plomo.
+  chk(opcionesSugeridas(l).inclinacion === 0, "cnc: la apertura deberia arrancar en 0");
+
+  // El piso va donde apoya la pieza mas baja, y debe seguirla al cambiar
+  // el alto. Si se quedara fijo, el mueble se hundiria o flotaria.
+  const bajo = (a: ReturnType<typeof proponerArmado>) =>
+    Math.min(...a.colocaciones.map((c) => c.z)) ;
+  for (const alto of [500, 750, 1400]) {
+    const a = proponerArmado(l, { ...op, alto, inclinacion: 0 });
+    chk(Number.isFinite(a.alturaPiso), `cnc: alturaPiso invalida con alto ${alto}`);
+    chk(
+      a.alturaPiso <= bajo(a) + 1,
+      `cnc: el piso (${a.alturaPiso}) queda por encima de la pieza mas baja con alto ${alto}`
+    );
+  }
+  const bajoA = proponerArmado(l, { ...op, alto: 500, inclinacion: 0 }).alturaPiso;
+  const altoA = proponerArmado(l, { ...op, alto: 1400, inclinacion: 0 }).alturaPiso;
+  chk(altoA !== bajoA, "cnc: el piso no siguio al mueble al cambiar el alto");
+  console.log(`piso: sigue al mueble (alto 500 -> ${bajoA} mm, alto 1400 -> ${altoA} mm)`);
 }
 
 {

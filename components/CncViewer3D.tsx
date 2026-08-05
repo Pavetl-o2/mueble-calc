@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
-import { Grid, OrbitControls, Edges } from "@react-three/drei";
+import { Edges, GizmoHelper, GizmoViewcube, Grid, OrbitControls } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import type { ContornoCnc } from "@/lib/cnc";
@@ -55,7 +55,14 @@ function limpiar(pts: THREE.Vector2[], horario: boolean): THREE.Vector2[] {
  * componerla como otra rotacion mas: mantiene el arbol de grupos corto y
  * evita depender del orden en que se apliquen.
  */
-function geometriaDe(c: ContornoCnc, o?: { giroLocal: number; espejo: boolean }): THREE.ExtrudeGeometry {
+interface Orient {
+  giroLocal: number;
+  espejo: boolean;
+  /** true = origen en el medio del canto superior; false = en el centro. */
+  colgante: boolean;
+}
+
+function geometriaDe(c: ContornoCnc, o?: Orient): THREE.ExtrudeGeometry {
   let ext = c.ext;
   let huecos = c.huecos;
 
@@ -73,7 +80,7 @@ function geometriaDe(c: ContornoCnc, o?: { giroLocal: number; espejo: boolean })
   const ys = ext.map((p) => p[1]);
   const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
   // Parada: el origen queda en el canto de arriba. Acostada: en el centro.
-  const cy = o ? Math.max(...ys) : (Math.min(...ys) + Math.max(...ys)) / 2;
+  const cy = o?.colgante ? Math.max(...ys) : (Math.min(...ys) + Math.max(...ys)) / 2;
   const v = (p: [number, number]) => new THREE.Vector2(p[0] - cx, p[1] - cy);
 
   // Exterior antihorario, huecos horarios. limpiar() normaliza el sentido,
@@ -113,13 +120,13 @@ function Malla({
 }: {
   contorno: ContornoCnc;
   espesor: number;
-  orientacion?: { giroLocal: number; espejo: boolean };
+  orientacion?: Orient;
   seleccionada: boolean;
   onSelect: (id: string | null) => void;
 }) {
   const geo = useMemo(
     () => geometriaDe(contorno, orientacion),
-    [contorno, orientacion?.giroLocal, orientacion?.espejo]
+    [contorno, orientacion?.giroLocal, orientacion?.espejo, orientacion?.colgante]
   );
 
   // Al cambiar de archivo se generan geometrias nuevas. Sin liberar las
@@ -175,27 +182,29 @@ function PiezaColocada({
     <Malla
       contorno={contorno}
       espesor={espesor}
-      orientacion={c.acostada ? undefined : { giroLocal: c.giroLocal, espejo: c.espejo }}
+      orientacion={{ giroLocal: c.giroLocal, espejo: c.espejo, colgante: !c.acostada }}
       seleccionada={seleccionada}
       onSelect={onSelect}
     />
   );
 
-  if (c.acostada) {
-    return <group position={[0, 0, c.z]}>{malla}</group>;
-  }
-
+  // El mismo arbol para todas: el panel tambien se puede girar y correr,
+  // solo que no se para. Antes tenia una rama aparte que ignoraba sus
+  // ajustes, asi que seleccionarlo no servia de nada.
   return (
     <group rotation={[0, 0, c.giro]}>
       {/* desliz corre a lo largo del propio eje de la pieza (la tangente),
           que es lo que alinea su espiga con la mortaja. */}
       <group position={[c.radio, c.desliz, c.z]}>
-        <group rotation={[0, 0, Math.PI / 2]}>
-          {/* +inclinacion abre la pieza hacia afuera por abajo, que es como
-              se dibujan las patas conicas. Con signo negativo se cerrarian
-              en X, apoyando hacia el centro. */}
-          <group rotation={[Math.PI / 2 + c.inclinacion, 0, 0]}>{malla}</group>
-        </group>
+        {c.acostada ? (
+          malla
+        ) : (
+          <group rotation={[0, 0, Math.PI / 2]}>
+            {/* +inclinacion abre la pieza hacia afuera por abajo. Con signo
+                negativo se cerraria en X, apoyando hacia el centro. */}
+            <group rotation={[Math.PI / 2 + c.inclinacion, 0, 0]}>{malla}</group>
+          </group>
+        )}
       </group>
     </group>
   );
@@ -205,6 +214,7 @@ export default function CncViewer3D({
   piezas,
   espesor,
   colocaciones,
+  alturaPiso,
   selected,
   onSelect,
 }: {
@@ -212,6 +222,8 @@ export default function CncViewer3D({
   espesor: number;
   /** Sin colocaciones se muestran acostadas como en la hoja de corte. */
   colocaciones?: Colocacion[];
+  /** Cota donde apoya el mueble. El piso se dibuja ahi. */
+  alturaPiso?: number;
   selected: string | null;
   onSelect: (id: string | null) => void;
 }) {
@@ -234,7 +246,7 @@ export default function CncViewer3D({
     if (!armado) {
       const w = xs.length ? Math.max(...xs) - Math.min(...xs) : 1000;
       const h = ys.length ? Math.max(...ys) - Math.min(...ys) : 1000;
-      return { cx, cy, alturaOjo: 0, extension: Math.max(w, h, 200) };
+      return { cx, cy, alturaOjo: 0, extension: Math.max(w, h, 200), piso: Math.max(w, h, 200) };
     }
 
     const alto = Math.max(...(colocaciones ?? []).map((c) => c.z), 1);
@@ -243,10 +255,14 @@ export default function CncViewer3D({
     return {
       cx: 0,
       cy: 0,
-      alturaOjo: alto / 2,
+      alturaOjo: (alto + (alturaPiso ?? 0)) / 2,
       extension: Math.max(ancho, radio * 2, alto),
+      // El piso NO se escala con los controles: si su tamano y su
+      // desvanecido cambiaran al mover el alto, pareceria que el suelo se
+      // mueve bajo el mueble. Se fija al tamano de las piezas, que no cambia.
+      piso: Math.max(ancho, 500),
     };
-  }, [piezas, colocaciones, armado]);
+  }, [piezas, colocaciones, armado, alturaPiso]);
 
   const dist = Math.max(400, vista.extension * 1.9);
 
@@ -334,18 +350,36 @@ export default function CncViewer3D({
           })}
         </group>
 
+        {/* El piso va donde apoya el mueble, no a una altura fija: al mover
+            el alto, un suelo fijo hace que el mueble se hunda o flote.
+            followCamera queda apagado a proposito, que es lo que hace que
+            la rejilla se deslice al orbitar. */}
         <Grid
-          position={[0, -espesor, 0]}
-          args={[vista.extension * 6, vista.extension * 6]}
+          position={[0, (alturaPiso ?? -espesor) - 1, 0]}
+          args={[vista.piso * 4, vista.piso * 4]}
           cellSize={100}
-          cellThickness={0.5}
+          cellThickness={0.6}
           cellColor="#C4C9BF"
           sectionSize={500}
-          sectionThickness={1}
+          sectionThickness={1.2}
           sectionColor="#A8AEA2"
-          fadeDistance={vista.extension * 10}
+          fadeDistance={vista.piso * 8}
+          fadeStrength={1.5}
+          followCamera={false}
           infiniteGrid
         />
+
+        {/* Cubo de vistas: al picar una cara la camara se va a ella, como en
+            Fusion o Blender. Los nombres van en ejes de CAD, no de three. */}
+        <GizmoHelper alignment="bottom-right" margin={[72, 72]}>
+          <GizmoViewcube
+            faces={["Derecha", "Izquierda", "Arriba", "Abajo", "Frente", "Atras"]}
+            color="#F3F5F1"
+            hoverColor="#E3EFEA"
+            textColor="#171A17"
+            strokeColor="#8E9489"
+          />
+        </GizmoHelper>
 
         <OrbitControls
           makeDefault

@@ -230,6 +230,7 @@ export default function Page() {
                   piezas={cnc.lectura.piezas}
                   espesor={cnc.asig.espesor}
                   colocaciones={armado?.colocaciones}
+                  alturaPiso={armado?.alturaPiso}
                   selected={selected}
                   onSelect={setSelected}
                 />

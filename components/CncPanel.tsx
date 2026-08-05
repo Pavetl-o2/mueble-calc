@@ -488,7 +488,7 @@ export default function CncPanel({
       </section>
 
       {/* ---- Ajuste de una pieza ---- */}
-      {piezaSel && !esPanelSel && (
+      {piezaSel && (
         <section>
           <div className="flex items-baseline justify-between mb-2">
             <h3 className="text-[15px] font-medium">Ajustar {piezaSel.id}</h3>
@@ -511,12 +511,15 @@ export default function CncPanel({
               on={(v) => setAjuste(piezaSel.id, { desliz: v })} />
             <Rango label="Acercar" v={ajusteSel.radio ?? 0} min={-400} max={400} u="mm"
               on={(v) => setAjuste(piezaSel.id, { radio: v })} />
-            <Rango label="Subir" v={ajusteSel.z ?? 0} min={-400} max={400} u="mm"
+            <Rango label="Subir" v={ajusteSel.z ?? 0} min={-600} max={600} u="mm"
               on={(v) => setAjuste(piezaSel.id, { z: v })} />
-            <Rango label="Abrir" v={ajusteSel.inclinacion ?? 0} min={-45} max={45} u="°"
-              on={(v) => setAjuste(piezaSel.id, { inclinacion: v })} />
             <Rango label="Rotar en plano" v={ajusteSel.giroLocal ?? 0} min={-180} max={180} u="°"
               on={(v) => setAjuste(piezaSel.id, { giroLocal: v })} />
+            {/* Inclinar solo tiene sentido en una pieza parada. */}
+            {!esPanelSel && (
+              <Rango label="Abrir" v={ajusteSel.inclinacion ?? 0} min={-45} max={45} u="°"
+                on={(v) => setAjuste(piezaSel.id, { inclinacion: v })} />
+            )}
           </div>
           <p className="text-[12px] text-muted mt-2">
             Son correcciones sobre lo que propuso el armador, no valores absolutos. Se guardan

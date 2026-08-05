@@ -187,6 +187,12 @@ export interface Armado {
   colocaciones: Colocacion[];
   /** Alto total resultante, en mm. */
   alto: number;
+  /**
+   * Cota del punto mas bajo del mueble. El visor apoya el piso ahi, en vez
+   * de en una altura fija: si no, al mover el alto el mueble se hunde o
+   * flota y parece que el suelo se mueve.
+   */
+  alturaPiso: number;
   familia: string;
   /** Que tan confiable es. El armado nunca es exacto. */
   confianza: "alta" | "media" | "baja";
@@ -344,9 +350,13 @@ export function opcionesSugeridas(l: LecturaCnc): OpcionesArmado {
     ? Math.round(Math.min(panel.largo, panel.ancho) * 0.35)
     : 300;
 
-  // La ranura mas ancha delata el angulo con que entra la pieza.
-  const angular = l.ranuras.find((r) => r.anguloGrados != null);
-  const inclinacion = angular?.anguloGrados ?? 0;
+  // La apertura arranca en cero a proposito. Una ranura mas ancha que el
+  // espesor dice que la ESPIGA entra en angulo, y eso se consigue casi
+  // siempre cortando el hombro en diagonal, con el tablero a plomo: en
+  // flat-pack de CNC los paneles son verticales u horizontales salvo
+  // excepcion. Inclinar la pieza entera por ese dato desarma el mueble.
+  // El angulo se reporta y el usuario lo aplica si de verdad va inclinada.
+  const inclinacion = 0;
 
   // El alto sale del lado CORTO de la caja de la pieza vertical, no del
   // largo: una pata que viene dibujada en diagonal, o unida a su faldon en
@@ -368,7 +378,10 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
   const colocaciones: Colocacion[] = [];
   const panel = panelDe(l);
   if (!panel) {
-    return { colocaciones: [], alto: 0, familia: "desconocida", confianza: "baja", notas: ["Sin piezas."] };
+    return {
+      colocaciones: [], alto: 0, alturaPiso: 0,
+      familia: "desconocida", confianza: "baja", notas: ["Sin piezas."],
+    };
   }
 
   // El visor centra cada contorno en su propio bbox, asi que la colocacion
@@ -443,6 +456,18 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
 
   notas.push(...ens.notas);
 
+  // El piso queda donde apoya la pieza mas baja.
+  let piso = op.alto - t;
+  for (const c of colocaciones) {
+    if (c.acostada) {
+      piso = Math.min(piso, c.z - t / 2);
+      continue;
+    }
+    const v = verticales.find((x) => x.id === c.piezaId);
+    if (!v) continue;
+    piso = Math.min(piso, c.z - orientarPieza(v).alto * Math.cos(c.inclinacion));
+  }
+
   const iguales = verticales.every(
     (v) => Math.abs(v.areaMm2 - verticales[0].areaMm2) < verticales[0].areaMm2 * 0.05
   );
@@ -463,5 +488,12 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
     "Esta vista es una hipotesis de armado, no un modelo de fabricacion: no resuelve espiga por espiga."
   );
 
-  return { colocaciones, alto: op.alto + t, familia: "panel + perimetrales", confianza, notas };
+  return {
+    colocaciones,
+    alto: op.alto + t,
+    alturaPiso: Math.round(piso),
+    familia: "panel + perimetrales",
+    confianza,
+    notas,
+  };
 }
