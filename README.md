@@ -27,12 +27,25 @@ necesita**: se procesa en tu navegador.
 | `OPENROUTER_MODEL` | Modelo, p. ej. `moonshotai/kimi-k3`. **Debe aceptar imágenes.** |
 | `OPENROUTER_SITE_URL` | Opcional, para atribuir el tráfico a tu app. |
 | `OPENROUTER_MAX_TOKENS` | Opcional, por defecto 4000. Súbelo si el modelo devuelve respuestas vacías. |
+| `LLM_TIMEOUT_MS` | Opcional, por defecto 20000. Debe quedar por debajo del límite de duración de tu plan. |
 | `ANTHROPIC_API_KEY` | Alternativa: API de Claude directo. |
 | `ANTHROPIC_MODEL` | Opcional, por defecto `claude-sonnet-5`. |
 
 Las dos rutas que usan modelo (`/api/extract-plan` y `/api/cnc-armado`) mandan una
 imagen, así que un modelo de solo texto va a fallar. Si pasa, la app lo dice con
 ese mensaje en vez del error crudo del proveedor.
+
+**Si algo falla, abre `/api/diagnostico`.** Reporta qué proveedor y modelo están
+activos, si la llave está puesta (nunca la muestra), y hace una llamada barata al
+proveedor para comprobar que la función alcanza internet y que la credencial sirve.
+Distingue los tres casos que desde el navegador se ven igual: llave mala, sin salida
+a internet, y modelo lento.
+
+> **Duración de la función.** Estas rutas declaran `maxDuration = 60`, pero el tope
+> real lo pone tu plan de Vercel. Si la plataforma corta antes que `LLM_TIMEOUT_MS`,
+> la respuesta deja de ser JSON y el error se vuelve opaco. Cuando eso pase, en los
+> logs de la función verás `FUNCTION_INVOCATION_TIMEOUT`: baja `LLM_TIMEOUT_MS` por
+> debajo de tu tope, o habilita Fluid Compute para llegar a 60 s.
 
 ### En local
 

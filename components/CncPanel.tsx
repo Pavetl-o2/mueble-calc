@@ -439,8 +439,15 @@ export default function CncPanel({
           </div>
         )}
         {imgError && (
-          <div className="card border-bronze bg-bronzeLight p-3 text-[13px] text-bronze">
-            {imgError}
+          <div className="card border-bronze bg-bronzeLight p-3 text-[13px] text-bronze space-y-1.5">
+            <div>{imgError}</div>
+            <div className="text-[12px]">
+              Para ver donde falla la conexion con el modelo, abre{" "}
+              <a href="/api/diagnostico" target="_blank" rel="noreferrer" className="underline">
+                /api/diagnostico
+              </a>
+              .
+            </div>
           </div>
         )}
         {imgNotas.length > 0 && (

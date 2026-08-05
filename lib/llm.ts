@@ -79,32 +79,168 @@ export const FALTA_LLAVE =
   "OPENROUTER_MODEL) o ANTHROPIC_API_KEY en las variables de entorno. " +
   "Todo lo que se calcula del DXF funciona sin esto.";
 
+/**
+ * Presupuesto propio para la llamada al proveedor, en milisegundos.
+ *
+ * Tiene que quedar POR DEBAJO del limite de duracion de la funcion. Si se
+ * agota primero el de la plataforma, esta responde con su propia pagina
+ * de error (504) y se pierde todo rastro de que fallo; abortando antes se
+ * puede devolver un JSON que diga cuanto tardo y donde se quedo.
+ *
+ * En Vercel el tope depende del plan: con Fluid Compute son 60 s, pero un
+ * proyecto Hobby sin el puede cortar mucho antes. Por eso es ajustable.
+ */
+const TIMEOUT_DEFECTO_MS = 20_000;
+
+function presupuestoMs(): number {
+  const env = Number(process.env.LLM_TIMEOUT_MS);
+  if (Number.isFinite(env) && env >= 1000) return Math.round(env);
+  return TIMEOUT_DEFECTO_MS;
+}
+
 export async function pedirVision(req: PeticionVision): Promise<RespuestaLlm> {
   const activo = proveedorActivo();
   if (!activo) return { ok: false, status: 501, error: FALTA_LLAVE };
 
+  const ms = presupuestoMs();
+  const ctrl = new AbortController();
+  const reloj = setTimeout(() => ctrl.abort(), ms);
+  const t0 = Date.now();
+  const seg = () => ((Date.now() - t0) / 1000).toFixed(1);
+
   try {
-    return activo.proveedor === "openrouter"
-      ? await viaOpenRouter(req, activo.modelo)
-      : await viaAnthropic(req, activo.modelo);
+    const r =
+      activo.proveedor === "openrouter"
+        ? await viaOpenRouter(req, activo.modelo, ctrl.signal)
+        : await viaAnthropic(req, activo.modelo, ctrl.signal);
+    // El tiempo sirve para distinguir un modelo lento de un corte de la
+    // plataforma, que es justo lo que no se puede ver desde el navegador.
+    return r.ok ? r : { ...r, detalle: `${r.detalle ?? ""} [${seg()}s]`.trim() };
   } catch (e) {
+    if (ctrl.signal.aborted) {
+      return {
+        ok: false,
+        status: 504,
+        error:
+          `${activo.modelo} no respondio en ${Math.round(ms / 1000)}s. ` +
+          `Sube LLM_TIMEOUT_MS si tu plan permite funciones mas largas, o usa un modelo mas rapido. ` +
+          `El armado por simetria no necesita modelo.`,
+        detalle: `abortado por el cliente a los ${seg()}s`,
+      };
+    }
     return {
       ok: false,
-      status: 500,
-      error: "No se pudo contactar al modelo.",
-      detalle: String(e).slice(0, 300),
+      status: 502,
+      error: `No se pudo contactar a ${activo.proveedor}: la conexion fallo antes de recibir respuesta.`,
+      detalle: `${String(e).slice(0, 240)} [${seg()}s]`,
     };
+  } finally {
+    clearTimeout(reloj);
   }
 }
 
 // ---------------------------------------------------------------
 
-async function viaOpenRouter(req: PeticionVision, modelo: string): Promise<RespuestaLlm> {
+export interface Diagnostico {
+  proveedor: Proveedor | null;
+  modelo: string | null;
+  llave: { puesta: boolean; largo: number; prefijo: string };
+  maxTokens: number;
+  timeoutMs: number;
+  baseUrl: string;
+  /** Resultado de una llamada barata al proveedor, sin gastar modelo. */
+  conectividad: { ok: boolean; ms: number; detalle: string };
+}
+
+/**
+ * Comprueba lo que la app no puede ver desde el navegador: si la funcion
+ * alcanza al proveedor y si la llave sirve. Se usa /key de OpenRouter
+ * porque valida credencial y salida a internet sin invocar ningun modelo,
+ * asi que es gratis y rapido.
+ */
+export async function diagnosticar(): Promise<Diagnostico> {
+  const activo = proveedorActivo();
+  const key = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY || "";
+  const base = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+
+  const salida: Diagnostico = {
+    proveedor: activo?.proveedor ?? null,
+    modelo: activo?.modelo ?? null,
+    llave: { puesta: !!key, largo: key.length, prefijo: key.slice(0, 7) },
+    maxTokens: maxTokens(),
+    timeoutMs: presupuestoMs(),
+    baseUrl: activo?.proveedor === "anthropic" ? "https://api.anthropic.com" : base,
+    conectividad: { ok: false, ms: 0, detalle: "no se intento" },
+  };
+
+  if (!activo) {
+    salida.conectividad.detalle = "sin llave configurada";
+    return salida;
+  }
+
+  const ctrl = new AbortController();
+  const reloj = setTimeout(() => ctrl.abort(), 10_000);
+  const t0 = Date.now();
+  try {
+    if (activo.proveedor === "openrouter") {
+      const res = await fetch(`${base}/key`, {
+        signal: ctrl.signal,
+        headers: { authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+      });
+      const cuerpo = (await res.text()).slice(0, 200);
+      salida.conectividad = {
+        ok: res.ok,
+        ms: Date.now() - t0,
+        detalle: res.ok ? `llave valida (${cuerpo})` : `HTTP ${res.status}: ${cuerpo}`,
+      };
+    } else {
+      // Anthropic no tiene sonda gratuita; se pide 1 token, que es casi nada.
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY as string,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: activo.modelo,
+          max_tokens: 1,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      salida.conectividad = {
+        ok: res.ok,
+        ms: Date.now() - t0,
+        detalle: res.ok ? "llave valida" : `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+      };
+    }
+  } catch (e) {
+    salida.conectividad = {
+      ok: false,
+      ms: Date.now() - t0,
+      detalle: ctrl.signal.aborted
+        ? "sin respuesta en 10s: la funcion no alcanza al proveedor (egress bloqueado o DNS)"
+        : String(e).slice(0, 200),
+    };
+  } finally {
+    clearTimeout(reloj);
+  }
+
+  return salida;
+}
+
+async function viaOpenRouter(
+  req: PeticionVision,
+  modelo: string,
+  signal: AbortSignal
+): Promise<RespuestaLlm> {
   // Configurable para poder apuntar a un gateway compatible con OpenAI, o a
   // un servidor de prueba.
   const base = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -157,9 +293,14 @@ async function viaOpenRouter(req: PeticionVision, modelo: string): Promise<Respu
   return { ok: true, texto, proveedor: "openrouter", modelo };
 }
 
-async function viaAnthropic(req: PeticionVision, modelo: string): Promise<RespuestaLlm> {
+async function viaAnthropic(
+  req: PeticionVision,
+  modelo: string,
+  signal: AbortSignal
+): Promise<RespuestaLlm> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       "x-api-key": process.env.ANTHROPIC_API_KEY as string,
