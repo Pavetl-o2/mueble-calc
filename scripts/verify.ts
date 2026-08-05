@@ -6,6 +6,7 @@ import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
 import { leerCorteDxf } from "../lib/cnc";
 import { despieceCnc, opcionesSugeridas, panelDe, proponerArmado } from "../lib/cncArmado";
+import { extraerJson, proveedorActivo } from "../lib/llm";
 import { readFileSync, existsSync } from "fs";
 
 let fallas = 0;
@@ -234,6 +235,52 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   } catch (e) {
     chk(false, `cnc: excepcion con archivo invalido: ${e}`);
   }
+}
+
+// ---------------------------------------------------------------
+console.log("\n=== PROVEEDOR DE MODELO ===");
+{
+  const guardar = {
+    or: process.env.OPENROUTER_API_KEY,
+    orm: process.env.OPENROUTER_MODEL,
+    an: process.env.ANTHROPIC_API_KEY,
+  };
+  const limpiar = () => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_MODEL;
+    delete process.env.ANTHROPIC_API_KEY;
+  };
+
+  limpiar();
+  chk(proveedorActivo() === null, "llm: sin llaves deberia no haber proveedor");
+
+  limpiar();
+  process.env.ANTHROPIC_API_KEY = "sk-ant-x";
+  chk(proveedorActivo()?.proveedor === "anthropic", "llm: con llave de Anthropic deberia elegir anthropic");
+
+  // Con las dos llaves puestas, OpenRouter gana.
+  process.env.OPENROUTER_API_KEY = "sk-or-x";
+  const dos = proveedorActivo();
+  chk(dos?.proveedor === "openrouter", `llm: con ambas llaves gana openrouter, dio ${dos?.proveedor}`);
+  chk(dos?.modelo === "moonshotai/kimi-k3", `llm: modelo por defecto inesperado (${dos?.modelo})`);
+
+  process.env.OPENROUTER_MODEL = "otro/modelo-vision";
+  chk(proveedorActivo()?.modelo === "otro/modelo-vision", "llm: OPENROUTER_MODEL deberia mandar");
+  console.log("seleccion de proveedor: ok");
+
+  limpiar();
+  if (guardar.or) process.env.OPENROUTER_API_KEY = guardar.or;
+  if (guardar.orm) process.env.OPENROUTER_MODEL = guardar.orm;
+  if (guardar.an) process.env.ANTHROPIC_API_KEY = guardar.an;
+
+  // El JSON llega envuelto en cercas de markdown mas de lo que uno quisiera.
+  const conCercas = extraerJson('```json\n{"alto":740,"roles":{"c2":"panel"}}\n```') as { alto: number } | null;
+  chk(conCercas?.alto === 740, "llm: no se pudo extraer JSON entre cercas");
+  const conRuido = extraerJson('Claro, aqui tienes:\n{"alto":700}\nEspero que sirva.') as { alto: number } | null;
+  chk(conRuido?.alto === 700, "llm: no se pudo extraer JSON rodeado de texto");
+  chk(extraerJson("no hay json aqui") === null, "llm: deberia devolver null sin JSON");
+  chk(extraerJson("{roto: sin comillas") === null, "llm: deberia devolver null con JSON invalido");
+  console.log("extraccion de JSON: ok");
 }
 
 console.log(fallas === 0 ? "\n>>> TODAS LAS PRUEBAS PASARON" : `\n>>> ${fallas} FALLAS`);

@@ -111,6 +111,7 @@ export default function CncPanel({
       setImgNotas([
         ...(data.familia ? [`Familia: ${data.familia} (confianza ${data.confianza}).`] : []),
         ...(data.observaciones ?? []),
+        ...(data.modelo ? [`Leido con ${data.modelo} via ${data.proveedor}.`] : []),
       ]);
     } catch (e) {
       setImgError(String(e));

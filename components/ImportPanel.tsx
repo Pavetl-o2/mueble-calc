@@ -248,7 +248,8 @@ export default function ImportPanel({
           <h3 className="text-[15px] font-medium">Importar desde imagen</h3>
           <p className="text-[13px] text-muted mt-0.5">
             Para cuando solo hay una foto o un PDF exportado a imagen. Es menos preciso que el
-            DXF: propone medidas que hay que verificar. Requiere configurar ANTHROPIC_API_KEY.
+            DXF: propone medidas que hay que verificar. Requiere configurar la llave del modelo
+            (OPENROUTER_API_KEY o ANTHROPIC_API_KEY).
           </p>
         </div>
 

@@ -18,8 +18,20 @@ todo el **contenido** de esta carpeta (no la carpeta) y `Commit changes`.
 `Add New` → `Project` → elige `mueble-calc` → `Deploy`. Vercel detecta Next.js solo.
 
 **4. (Opcional) Lectura de imágenes.** En Vercel: `Settings` → `Environment Variables`
-→ agrega `ANTHROPIC_API_KEY` y vuelve a desplegar. **La importación de DXF no lo
+→ agrega la llave del proveedor y vuelve a desplegar. **La lectura de DXF no lo
 necesita**: se procesa en tu navegador.
+
+| Variable | Para qué |
+|---|---|
+| `OPENROUTER_API_KEY` | Llave de OpenRouter. Si está, tiene prioridad. |
+| `OPENROUTER_MODEL` | Modelo, p. ej. `moonshotai/kimi-k3`. **Debe aceptar imágenes.** |
+| `OPENROUTER_SITE_URL` | Opcional, para atribuir el tráfico a tu app. |
+| `ANTHROPIC_API_KEY` | Alternativa: API de Claude directo. |
+| `ANTHROPIC_MODEL` | Opcional, por defecto `claude-sonnet-5`. |
+
+Las dos rutas que usan modelo (`/api/extract-plan` y `/api/cnc-armado`) mandan una
+imagen, así que un modelo de solo texto va a fallar. Si pasa, la app lo dice con
+ese mensaje en vez del error crudo del proveedor.
 
 ### En local
 

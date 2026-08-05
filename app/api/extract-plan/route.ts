@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { presets } from "@/lib/spec";
+import { extraerJson, FALTA_LLAVE, pedirVision, proveedorActivo } from "@/lib/llm";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -12,15 +13,8 @@ export const maxDuration = 60;
 // ---------------------------------------------------------------
 
 export async function POST(req: Request) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "Falta ANTHROPIC_API_KEY. Agregala en las variables de entorno de Vercel para leer imagenes. La importacion de DXF funciona sin esto.",
-      },
-      { status: 501 }
-    );
+  if (!proveedorActivo()) {
+    return NextResponse.json({ error: FALTA_LLAVE }, { status: 501 });
   }
 
   let body: { image?: string; mediaType?: string; nota?: string };
@@ -51,79 +45,43 @@ Responde SOLO con JSON valido, sin markdown:
     body.nota ? `\n\nContexto adicional: ${body.nota}` : ""
   }`;
 
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5",
-        max_tokens: 1200,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: body.mediaType || "image/png",
-                  data: body.image,
-                },
-              },
-              { type: "text", text: prompt },
-            ],
-          },
-        ],
-      }),
-    });
+  const r = await pedirVision({
+    prompt,
+    imagenB64: body.image,
+    mediaType: body.mediaType || "image/png",
+    maxTokens: 1200,
+  });
+  if (!r.ok) {
+    return NextResponse.json({ error: r.error, detail: r.detalle }, { status: r.status });
+  }
 
-    if (!res.ok) {
-      const detail = await res.text();
-      return NextResponse.json(
-        { error: `La API respondio ${res.status}.`, detail: detail.slice(0, 400) },
-        { status: 502 }
-      );
-    }
-
-    const data = await res.json();
-    const text: string = (data.content ?? [])
-      .filter((b: { type: string }) => b.type === "text")
-      .map((b: { text: string }) => b.text)
-      .join("\n");
-
-    const match = text.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
-    if (!match) {
-      return NextResponse.json(
-        { error: "No se pudo interpretar la respuesta del modelo." },
-        { status: 502 }
-      );
-    }
-
-    const spec = JSON.parse(match[0]);
-    const preset = presets.find((p) => p.id === spec.preset)?.id ?? "base";
-    const lim = (v: unknown) => {
-      const n = Number(v);
-      return Number.isFinite(n) && n >= 100 && n <= 4000 ? Math.round(n) : undefined;
-    };
-
-    return NextResponse.json({
-      preset,
-      ancho: lim(spec.ancho),
-      alto: lim(spec.alto),
-      prof: lim(spec.prof),
-      confianza: spec.confianza ?? "media",
-      materiales: Array.isArray(spec.materiales) ? spec.materiales.slice(0, 10) : [],
-      supuestos: Array.isArray(spec.supuestos) ? spec.supuestos.slice(0, 8) : [],
-      notas: typeof spec.notas === "string" ? spec.notas : "",
-    });
-  } catch (e) {
+  const spec = extraerJson(r.texto) as Record<string, unknown> | null;
+  if (!spec) {
     return NextResponse.json(
-      { error: "Fallo la lectura del plano.", detail: String(e).slice(0, 300) },
-      { status: 500 }
+      {
+        error: `El modelo ${r.modelo} no devolvio JSON interpretable.`,
+        detail: r.texto.slice(0, 300),
+      },
+      { status: 502 }
     );
   }
+
+  const preset = presets.find((p) => p.id === spec.preset)?.id ?? "base";
+  const lim = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 100 && n <= 4000 ? Math.round(n) : undefined;
+  };
+
+  return NextResponse.json({
+    preset,
+    ancho: lim(spec.ancho),
+    alto: lim(spec.alto),
+    prof: lim(spec.prof),
+    confianza: spec.confianza ?? "media",
+    materiales: Array.isArray(spec.materiales) ? spec.materiales.slice(0, 10) : [],
+    supuestos: Array.isArray(spec.supuestos) ? spec.supuestos.slice(0, 8) : [],
+    notas: typeof spec.notas === "string" ? spec.notas : "",
+    modelo: r.modelo,
+    proveedor: r.proveedor,
+  });
 }

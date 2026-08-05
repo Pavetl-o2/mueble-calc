@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { extraerJson, FALTA_LLAVE, pedirVision, proveedorActivo } from "@/lib/llm";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -26,15 +27,8 @@ interface PiezaResumen {
 }
 
 export async function POST(req: Request) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "Falta ANTHROPIC_API_KEY. Agregala en las variables de entorno de Vercel para leer la imagen de referencia. El armado automatico por simetria funciona sin esto.",
-      },
-      { status: 501 }
-    );
+  if (!proveedorActivo()) {
+    return NextResponse.json({ error: FALTA_LLAVE }, { status: 501 });
   }
 
   let body: {
@@ -90,85 +84,50 @@ Tu trabajo es decir COMO SE ARMA, no donde va cada punto. Reglas:
 Responde SOLO con JSON valido, sin markdown:
 {"roles":{"id":"panel|vertical|otro"},"alto":numero,"inclinacion":numero,"radio":numero,"familia":"texto corto","confianza":"alta|media|baja","observaciones":["texto"]}`;
 
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: 1500,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: body.mediaType || "image/png",
-                  data: body.image,
-                },
-              },
-              { type: "text", text: prompt },
-            ],
-          },
-        ],
-      }),
-    });
+  const r = await pedirVision({
+    prompt,
+    imagenB64: body.image,
+    mediaType: body.mediaType || "image/png",
+  });
+  if (!r.ok) {
+    return NextResponse.json({ error: r.error, detail: r.detalle }, { status: r.status });
+  }
 
-    if (!res.ok) {
-      const detail = await res.text();
-      return NextResponse.json(
-        { error: `La API respondio ${res.status}.`, detail: detail.slice(0, 400) },
-        { status: 502 }
-      );
-    }
-
-    const data = await res.json();
-    const text: string = (data.content ?? [])
-      .filter((b: { type: string }) => b.type === "text")
-      .map((b: { text: string }) => b.text)
-      .join("\n");
-
-    const match = text.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
-    if (!match) {
-      return NextResponse.json(
-        { error: "No se pudo interpretar la respuesta del modelo." },
-        { status: 502 }
-      );
-    }
-    const out = JSON.parse(match[0]);
-
-    // Se filtra contra las piezas reales: el modelo no puede inventar ids.
-    const validos = new Set(piezas.map((p) => p.id));
-    const roles: Record<string, string> = {};
-    for (const [id, rol] of Object.entries(out.roles ?? {})) {
-      if (!validos.has(id)) continue;
-      if (rol === "panel" || rol === "vertical" || rol === "otro") roles[id] = rol;
-    }
-
-    const num = (v: unknown, min: number, max: number) => {
-      const n = Number(v);
-      return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : undefined;
-    };
-
-    return NextResponse.json({
-      roles,
-      alto: num(out.alto, 100, 3000),
-      inclinacion: num(out.inclinacion, 0, 60),
-      radio: num(out.radio, 20, 3000),
-      familia: typeof out.familia === "string" ? out.familia.slice(0, 80) : "",
-      confianza: ["alta", "media", "baja"].includes(out.confianza) ? out.confianza : "media",
-      observaciones: Array.isArray(out.observaciones) ? out.observaciones.slice(0, 8) : [],
-    });
-  } catch (e) {
+  const out = extraerJson(r.texto) as Record<string, unknown> | null;
+  if (!out) {
     return NextResponse.json(
-      { error: "Fallo la lectura de la referencia.", detail: String(e).slice(0, 300) },
-      { status: 500 }
+      {
+        error: `El modelo ${r.modelo} no devolvio JSON interpretable.`,
+        detail: r.texto.slice(0, 300),
+      },
+      { status: 502 }
     );
   }
+
+  // Se filtra contra las piezas reales: el modelo no puede inventar ids.
+  const validos = new Set(piezas.map((p) => p.id));
+  const roles: Record<string, string> = {};
+  for (const [id, rol] of Object.entries((out.roles ?? {}) as Record<string, unknown>)) {
+    if (!validos.has(id)) continue;
+    if (rol === "panel" || rol === "vertical" || rol === "otro") roles[id] = rol;
+  }
+
+  const num = (v: unknown, min: number, max: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : undefined;
+  };
+
+  return NextResponse.json({
+    roles,
+    alto: num(out.alto, 100, 3000),
+    inclinacion: num(out.inclinacion, 0, 60),
+    radio: num(out.radio, 20, 3000),
+    familia: typeof out.familia === "string" ? out.familia.slice(0, 80) : "",
+    confianza: ["alta", "media", "baja"].includes(out.confianza as string)
+      ? (out.confianza as string)
+      : "media",
+    observaciones: Array.isArray(out.observaciones) ? out.observaciones.slice(0, 8) : [],
+    modelo: r.modelo,
+    proveedor: r.proveedor,
+  });
 }
