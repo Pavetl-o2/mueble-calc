@@ -4,6 +4,8 @@ import { costModel, cutList, money } from "../lib/costing";
 import { defaultCatalog } from "../lib/catalog";
 import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
+import { leerCorteDxf } from "../lib/cnc";
+import { despieceCnc, opcionesSugeridas, panelDe, proponerArmado } from "../lib/cncArmado";
 import { readFileSync, existsSync } from "fs";
 
 let fallas = 0;
@@ -125,6 +127,112 @@ for (const [nombre, mut] of rangos) {
     console.log(`${nombre}: ${m.parts.length} piezas, ${money(c.total)}${m.warnings.length ? " (avisa)" : ""}`);
   } catch (e) {
     chk(false, `${nombre}: excepcion ${e}`);
+  }
+}
+
+// ---------------------------------------------------------------
+console.log("\n=== MODULO CNC ===");
+
+/** DXF minimo con las aristas sueltas y desordenadas, como las saca un CAM. */
+function dxfDeSegmentos(segs: [number, number, number, number][]): string {
+  const ent = segs
+    .map(([x1, y1, x2, y2]) => `0\nLINE\n8\n0\n10\n${x1}\n20\n${y1}\n11\n${x2}\n21\n${y2}`)
+    .join("\n");
+  return `0\nSECTION\n2\nENTITIES\n${ent}\n0\nENDSEC\n0\nEOF\n`;
+}
+
+function rect(x0: number, y0: number, w: number, h: number): [number, number, number, number][] {
+  return [
+    [x0, y0, x0 + w, y0],
+    [x0 + w, y0, x0 + w, y0 + h],
+    [x0 + w, y0 + h, x0, y0 + h],
+    [x0, y0 + h, x0, y0],
+  ];
+}
+
+{
+  // Panel 1000x600 con una mortaja de 24x100, mas una pieza suelta 400x300.
+  const segs = [
+    ...rect(0, 0, 1000, 600),
+    ...rect(200, 250, 24, 100), // mortaja: el lado corto define el espesor
+    ...rect(1200, 0, 400, 300),
+  ];
+  // Se barajan para probar que el encadenado no depende del orden.
+  const mezcla = segs.map((s, i) => ({ s, k: (i * 7919) % 101 })).sort((a, b) => a.k - b.k).map((o) => o.s);
+  const l = leerCorteDxf(dxfDeSegmentos(mezcla));
+
+  chk(l.ok, `cnc: no se pudo leer (${l.error})`);
+  chk(l.extremosSueltos === 0, `cnc: ${l.extremosSueltos} extremos sueltos`);
+  chk(l.piezas.length === 2, `cnc: ${l.piezas.length} piezas, se esperaban 2`);
+  chk(l.espesor === 24, `cnc: espesor ${l.espesor}, se esperaba 24`);
+
+  const panel = panelDe(l)!;
+  chk(panel.huecos.length === 1, `cnc: el panel deberia tener 1 mortaja, tiene ${panel.huecos.length}`);
+  // 1000x600 menos la mortaja de 24x100
+  const esperada = (1000 * 600 - 24 * 100) / 1e6;
+  chk(
+    Math.abs(panel.areaMm2 / 1e6 - esperada) < 1e-6,
+    `cnc: area del panel ${(panel.areaMm2 / 1e6).toFixed(4)} != ${esperada.toFixed(4)}`
+  );
+  chk(Math.abs(panel.perimetroMm - 3200) < 0.5, `cnc: perimetro ${panel.perimetroMm} != 3200`);
+  console.log(`lectura: ${l.piezas.length} piezas | espesor ${l.espesor} mm | panel ${(panel.areaMm2 / 1e6).toFixed(4)} m2`);
+
+  // El despiece debe costear por area REAL, no por la caja envolvente.
+  const asig = {
+    material: Object.fromEntries(l.piezas.map((p) => [p.id, defaultCatalog.materiales[0].sku])),
+    cantear: Object.fromEntries(l.piezas.map((p) => [p.id, false])),
+    cantoSku: defaultCatalog.cantos[0].sku,
+    espesor: l.espesor ?? 18,
+  };
+  const m = despieceCnc(l, asig, defaultCatalog);
+  chk(m.parts.length === 2, `cnc: despiece con ${m.parts.length} piezas`);
+  // El corte mide 24mm y el material del catalogo es de 18: debe avisar.
+  chk(
+    m.warnings.some((w) => w.includes("24 mm")),
+    "cnc: no aviso del desajuste de espesor contra el catalogo"
+  );
+  const areaTotal = m.parts.reduce((a, p) => a + (p.areaRealM2 ?? 0), 0);
+  chk(Math.abs(areaTotal - (esperada + 0.12)) < 1e-6, `cnc: area total ${areaTotal.toFixed(4)}`);
+  const c = costModel(m, defaultCatalog, 1);
+  chk(Number.isFinite(c.total) && c.total > 0, "cnc: costo invalido");
+  // El bbox de la pieza suelta es 400x300 = 0.12 m2; si el costeo usara el
+  // bbox del panel en vez del contorno, el area subiria. Se verifica que no.
+  chk(
+    Math.abs(c.materialUso[0].m2Neto - (esperada + 0.12)) < 1e-6,
+    `cnc: el costeo no uso el area real (${c.materialUso[0].m2Neto.toFixed(4)})`
+  );
+  console.log(`despiece: ${m.parts.length} piezas | ${areaTotal.toFixed(4)} m2 | ${money(c.total)}`);
+
+  // Armado: debe colocar todas las piezas y no producir NaN.
+  const op = opcionesSugeridas(l);
+  const arm = proponerArmado(l, { ...op, alto: 750, inclinacion: 10, radio: 300 });
+  chk(arm.colocaciones.length === l.piezas.length, `cnc: armado incompleto (${arm.colocaciones.length})`);
+  chk(
+    arm.colocaciones.every((c) => [c.giro, c.radio, c.z, c.inclinacion].every(Number.isFinite)),
+    "cnc: el armado produjo posiciones NaN"
+  );
+  chk(
+    arm.colocaciones.filter((c) => !c.acostada).every((c) => c.z > 0),
+    "cnc: hay piezas verticales bajo el piso"
+  );
+  chk(arm.colocaciones.filter((c) => c.rol === "panel").length === 1, "cnc: deberia haber un solo panel");
+  console.log(`armado: ${arm.colocaciones.length} colocaciones | ${arm.familia} | confianza ${arm.confianza}`);
+}
+
+{
+  // Archivo sin contornos cerrados: debe fallar limpio, no reventar.
+  const abierto = leerCorteDxf(dxfDeSegmentos([[0, 0, 100, 0], [100, 0, 100, 100]]));
+  chk(!abierto.ok, "cnc: un contorno abierto no deberia dar ok");
+  chk(!!abierto.error, "cnc: falta el mensaje de error");
+  console.log(`contorno abierto: rechazado correctamente`);
+
+  // Basura: no debe lanzar excepcion.
+  try {
+    const basura = leerCorteDxf("esto no es un dxf");
+    chk(!basura.ok, "cnc: la basura no deberia dar ok");
+    console.log("archivo invalido: rechazado correctamente");
+  } catch (e) {
+    chk(false, `cnc: excepcion con archivo invalido: ${e}`);
   }
 }
 

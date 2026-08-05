@@ -40,6 +40,17 @@ export interface Part {
   /** Operaciones de maquinado, para el CAM. Informativo en v1. */
   maquinado?: string[];
   notas?: string;
+  /**
+   * Area real de la cara en m2, ya sin los huecos. Solo la traen las
+   * piezas de forma libre que vienen de un DXF de corte: para ellas la
+   * caja envolvente miente feo (una pata diagonal ocupa 0.82 m2 de caja
+   * y 0.18 m2 de tablero). Cuando falta se usa la cara del bbox.
+   */
+  areaRealM2?: number;
+  /** Perimetro real del contorno en metros, para cantear de forma libre. */
+  perimetroRealM?: number;
+  /** Contorno 2D en mm (exterior + huecos) para el visor y el DXF. */
+  contorno?: { ext: [number, number][]; huecos: [number, number][][] };
 }
 
 export interface HardwareLine {

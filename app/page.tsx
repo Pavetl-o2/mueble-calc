@@ -7,6 +7,8 @@ import ImportPanel from "@/components/ImportPanel";
 import PartsTable from "@/components/PartsTable";
 import CostPanel from "@/components/CostPanel";
 import CatalogEditor from "@/components/CatalogEditor";
+import CncPanel, { type EstadoCnc } from "@/components/CncPanel";
+import { despieceCnc, proponerArmado } from "@/lib/cncArmado";
 import { defaultCatalog } from "@/lib/catalog";
 import { costModel, cutList, money } from "@/lib/costing";
 import { costCsv, cutListCsv, download, manifestJson, partsDxf } from "@/lib/exporters";
@@ -21,9 +23,16 @@ const Viewer3D = dynamic(() => import("@/components/Viewer3D"), {
   ),
 });
 
+const Viewer3DCnc = dynamic(() => import("@/components/CncViewer3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-full grid place-items-center text-[13px] text-muted">Cargando visor…</div>
+  ),
+});
+
 const KEY_CAT = "mueble-calc.catalog.v2";
 const KEY_SPEC = "mueble-calc.spec.v2";
-type Tab = "importar" | "estructura" | "despiece" | "costo" | "catalogo";
+type Tab = "importar" | "estructura" | "cnc" | "despiece" | "costo" | "catalogo";
 
 export default function Page() {
   const [spec, setSpec] = useState<FurnitureSpec>(() => getPreset("base").make());
@@ -33,6 +42,9 @@ export default function Page() {
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("importar");
   const [ready, setReady] = useState(false);
+  // Cuando hay un corte CNC cargado, el despiece y el costo salen de el y
+  // no del modelo parametrico. Son dos fuentes excluyentes a proposito.
+  const [cnc, setCnc] = useState<EstadoCnc | null>(null);
 
   useEffect(() => {
     try {
@@ -56,19 +68,29 @@ export default function Page() {
     }
   }, [catalog, spec, ready]);
 
-  const model = useMemo(() => buildFurniture(spec), [spec]);
+  const model = useMemo(
+    () => (cnc ? despieceCnc(cnc.lectura, cnc.asig, catalog) : buildFurniture(spec)),
+    [cnc, spec, catalog]
+  );
+  const armado = useMemo(
+    () => (cnc?.armar ? proponerArmado(cnc.lectura, cnc.opciones) : null),
+    [cnc]
+  );
   const rows = useMemo(() => cutList(model, modulos), [model, modulos]);
   const cost = useMemo(() => costModel(model, catalog, modulos), [model, catalog, modulos]);
   const selPart = model.parts.find((p) => p.id === selected);
+  const selCnc = cnc?.lectura.piezas.find((p) => p.id === selected);
 
   function aplicarImport(s: FurnitureSpec) {
     setSpec(s);
+    setCnc(null); // el modelo parametrico y el corte CNC son excluyentes
     setSelected(null);
     setTab("estructura");
   }
 
   const stamp = new Date().toISOString().slice(0, 10);
-  const slug = `${spec.nombre.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Math.round(
+  const nombreActivo = cnc?.nombre || spec.nombre;
+  const slug = `${nombreActivo.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Math.round(
     model.bbox.w
   )}x${Math.round(model.bbox.d)}x${Math.round(model.bbox.h)}`;
 
@@ -101,6 +123,19 @@ export default function Page() {
                    2xl:grid-cols-[280px_minmax(0,1fr)_560px]"
       >
         <aside className="space-y-4 min-w-0 lg:col-start-1 lg:row-start-1 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
+          {cnc && (
+            <div className="card border-pine bg-pineLight p-3">
+              <div className="lbl text-pine mb-1">Corte CNC cargado</div>
+              <p className="text-[12px] text-ink">
+                El despiece y el costo salen de <span className="font-medium">{cnc.nombre}</span>,
+                no del modelo parametrico.
+              </p>
+              <button className="btn mt-2" onClick={() => { setCnc(null); setSelected(null); }}>
+                Volver al parametrico
+              </button>
+            </div>
+          )}
+
           <div className="card p-3">
             <label className="lbl block mb-1.5" htmlFor="preset">
               Empezar desde
@@ -111,6 +146,7 @@ export default function Page() {
               onChange={(e) => {
                 if (!e.target.value) return;
                 setSpec(getPreset(e.target.value).make());
+                setCnc(null);
                 setSelected(null);
               }}
               value=""
@@ -186,8 +222,29 @@ export default function Page() {
         <section className="min-w-0 flex flex-col lg:col-start-2 lg:row-start-1 xl:min-h-0">
           <div className="card overflow-hidden flex flex-col h-[380px] md:h-[440px] xl:h-auto xl:flex-1 xl:min-h-0">
             <div className="relative flex-1 min-h-0">
-              <Viewer3D model={model} explode={explode} selected={selected} onSelect={setSelected} />
-              {selPart && (
+              {cnc ? (
+                <Viewer3DCnc
+                  piezas={cnc.lectura.piezas}
+                  espesor={cnc.asig.espesor}
+                  colocaciones={armado?.colocaciones}
+                  selected={selected}
+                  onSelect={setSelected}
+                />
+              ) : (
+                <Viewer3D model={model} explode={explode} selected={selected} onSelect={setSelected} />
+              )}
+              {selCnc && (
+                <div className="absolute right-3 top-3 bg-panel/92 border border-pine rounded-md px-2.5 py-1.5 max-w-[240px]">
+                  <div className="text-[13px] font-medium">
+                    {selCnc.huecos.length ? "Panel" : "Pieza"}
+                  </div>
+                  <div className="num text-[12px] text-muted">
+                    {Math.round(selCnc.largo)} × {Math.round(selCnc.ancho)} mm ·{" "}
+                    {(selCnc.areaMm2 / 1e6).toFixed(3)} m²
+                  </div>
+                </div>
+              )}
+              {!cnc && selPart && (
                 <div className="absolute right-3 top-3 bg-panel/92 border border-pine rounded-md px-2.5 py-1.5 max-w-[240px]">
                   <div className="text-[13px] font-medium">{selPart.nombre}</div>
                   <div className="num text-[12px] text-muted">
@@ -202,17 +259,32 @@ export default function Page() {
               )}
             </div>
             <div className="shrink-0 border-t border-rule px-3 py-2 flex items-center gap-3">
-              <label htmlFor="explode" className="lbl shrink-0">Vista explotada</label>
-              <input
-                id="explode"
-                type="range"
-                min={0}
-                max={1}
-                step={0.02}
-                value={explode}
-                className="flex-1 h-1 cursor-pointer"
-                onChange={(e) => setExplode(Number(e.target.value))}
-              />
+              {cnc ? (
+                <>
+                  <span className="lbl shrink-0">
+                    {armado ? "Armado propuesto" : "Piezas planas"}
+                  </span>
+                  <span className="text-[11px] text-muted flex-1 min-w-0 truncate">
+                    {armado
+                      ? `${armado.familia} · confianza ${armado.confianza} · hipotesis, no fabricacion`
+                      : "Piezas como vienen en la hoja de corte"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="explode" className="lbl shrink-0">Vista explotada</label>
+                  <input
+                    id="explode"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={explode}
+                    className="flex-1 h-1 cursor-pointer"
+                    onChange={(e) => setExplode(Number(e.target.value))}
+                  />
+                </>
+              )}
               <span className="text-[11px] text-muted shrink-0">Clic en una pieza para inspeccionarla</span>
             </div>
           </div>
@@ -223,6 +295,7 @@ export default function Page() {
             {([
               ["importar", "Importar"],
               ["estructura", "Estructura"],
+              ["cnc", "CNC"],
               ["despiece", "Despiece"],
               ["costo", "Costo"],
               ["catalogo", "Catalogo"],
@@ -244,6 +317,18 @@ export default function Page() {
           <div className="cq flex-1 min-w-0 pt-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
             {tab === "importar" && <ImportPanel spec={spec} onApply={aplicarImport} />}
             {tab === "estructura" && <SpecEditor spec={spec} catalog={catalog} onChange={setSpec} />}
+            {tab === "cnc" && (
+              <CncPanel
+                catalog={catalog}
+                estado={cnc}
+                onEstado={(e) => {
+                  setCnc(e);
+                  setSelected(null);
+                }}
+                selected={selected}
+                onSelect={setSelected}
+              />
+            )}
             {tab === "despiece" && <PartsTable rows={rows} model={model} catalog={catalog} />}
             {tab === "costo" && <CostPanel cost={cost} catalog={catalog} modulos={modulos} />}
             {tab === "catalogo" && (

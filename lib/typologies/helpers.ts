@@ -71,13 +71,21 @@ export function faceDims(p: { sx: number; sy: number; sz: number }): [number, nu
   return [d[0], d[1], d[2]];
 }
 
-export function areaM2(p: { sx: number; sy: number; sz: number }): number {
+export function areaM2(p: { sx: number; sy: number; sz: number; areaRealM2?: number }): number {
+  // Las piezas de corte libre traen su area medida del contorno. Para el
+  // resto, la cara del bbox ES el area, porque son rectangulares.
+  if (p.areaRealM2 != null && p.areaRealM2 > 0) return p.areaRealM2;
   const [a, b] = faceDims(p);
   return (a * b) / 1e6;
 }
 
 /** Metros lineales de canto segun las banderas marcadas. */
 export function cantoMl(p: Part): number {
+  // En una pieza de forma libre no hay "lado largo" que cantear: o se
+  // cantea todo el contorno o nada.
+  if (p.perimetroRealM != null && p.perimetroRealM > 0) {
+    return p.cantos && Object.values(p.cantos).some(Boolean) ? p.perimetroRealM : 0;
+  }
   if (!p.cantos) return 0;
   const [largo, corto] = faceDims(p);
   let ml = 0;
