@@ -32,6 +32,33 @@
   .tab-active { @apply border-pine text-ink; }
 }
 
+/* Consultas de contenedor para el panel de pestanas.
+
+   El panel cambia mucho de ancho segun el layout: es una columna lateral de
+   ~430 px en escritorio y ocupa el ancho completo cuando se apila en pantallas
+   chicas. Los prefijos sm:/md:/lg: de Tailwind miran el viewport, no el
+   contenedor, asi que en el lateral seguirian aplicando 3 o 4 columnas y
+   aplastarian los campos. Estas utilidades reaccionan al ancho real del panel.
+
+   Van fuera de @layer a proposito: Tailwind purga el CSS escrito a mano dentro
+   de una capa, y estos nombres no los genera el JIT. */
+.cq { container-type: inline-size; }
+
+/* 42rem: cada campo numerico necesita ~190 px (etiqueta + input de 82 px +
+   unidad). Por debajo de eso las tres columnas se desbordan. */
+@container (min-width: 42rem) {
+  .cq-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@container (min-width: 40rem) {
+  .cq-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cq-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@container (min-width: 52rem) {
+  .cq-cols-3-lg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

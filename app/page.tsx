@@ -73,9 +73,12 @@ export default function Page() {
   )}x${Math.round(model.bbox.d)}x${Math.round(model.bbox.h)}`;
 
   return (
-    <main className="min-h-screen">
-      <header className="border-b border-rule bg-panel">
-        <div className="max-w-[1500px] mx-auto px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+    // En xl el espacio de trabajo ocupa exactamente la pantalla y cada columna
+    // hace su propio scroll, para que el visor 3D quede siempre a la vista.
+    // Debajo de xl se apila y la pagina scrollea normal.
+    <main className="min-h-screen xl:h-screen xl:flex xl:flex-col xl:overflow-hidden">
+      <header className="border-b border-rule bg-panel xl:shrink-0">
+        <div className="max-w-[1800px] mx-auto px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div>
             <h1 className="text-[17px] font-medium leading-tight">Despiece</h1>
             <p className="text-[12px] text-muted leading-tight">
@@ -91,8 +94,13 @@ export default function Page() {
         </div>
       </header>
 
-      <div className="max-w-[1500px] mx-auto px-4 py-4 grid lg:grid-cols-[300px_minmax(0,1fr)] gap-4">
-        <aside className="space-y-4">
+      <div
+        className="w-full max-w-[1800px] mx-auto px-4 py-4 grid gap-4 xl:flex-1 xl:min-h-0
+                   lg:grid-cols-[300px_minmax(0,1fr)]
+                   xl:grid-cols-[260px_minmax(0,1fr)_440px]
+                   2xl:grid-cols-[280px_minmax(0,1fr)_560px]"
+      >
+        <aside className="space-y-4 min-w-0 lg:col-start-1 lg:row-start-1 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
           <div className="card p-3">
             <label className="lbl block mb-1.5" htmlFor="preset">
               Empezar desde
@@ -175,9 +183,9 @@ export default function Page() {
           </div>
         </aside>
 
-        <section className="space-y-4 min-w-0">
-          <div className="card overflow-hidden">
-            <div className="h-[360px] md:h-[420px] relative">
+        <section className="min-w-0 flex flex-col lg:col-start-2 lg:row-start-1 xl:min-h-0">
+          <div className="card overflow-hidden flex flex-col h-[380px] md:h-[440px] xl:h-auto xl:flex-1 xl:min-h-0">
+            <div className="relative flex-1 min-h-0">
               <Viewer3D model={model} explode={explode} selected={selected} onSelect={setSelected} />
               {selPart && (
                 <div className="absolute right-3 top-3 bg-panel/92 border border-pine rounded-md px-2.5 py-1.5 max-w-[240px]">
@@ -193,7 +201,7 @@ export default function Page() {
                 </div>
               )}
             </div>
-            <div className="border-t border-rule px-3 py-2 flex items-center gap-3">
+            <div className="shrink-0 border-t border-rule px-3 py-2 flex items-center gap-3">
               <label htmlFor="explode" className="lbl shrink-0">Vista explotada</label>
               <input
                 id="explode"
@@ -208,28 +216,32 @@ export default function Page() {
               <span className="text-[11px] text-muted shrink-0">Clic en una pieza para inspeccionarla</span>
             </div>
           </div>
+        </section>
 
-          <div>
-            <div className="flex gap-1 border-b border-rule mb-4 overflow-x-auto" role="tablist">
-              {([
-                ["importar", "Importar plano"],
-                ["estructura", "Estructura"],
-                ["despiece", "Despiece"],
-                ["costo", "Costo"],
-                ["catalogo", "Catalogo"],
-              ] as [Tab, string][]).map(([id, label]) => (
-                <button
-                  key={id}
-                  role="tab"
-                  aria-selected={tab === id}
-                  className={`tab whitespace-nowrap ${tab === id ? "tab-active" : ""}`}
-                  onClick={() => setTab(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+        <aside className="min-w-0 flex flex-col lg:col-start-2 lg:row-start-2 xl:col-start-3 xl:row-start-1 xl:min-h-0">
+          <div className="flex gap-1 border-b border-rule shrink-0 overflow-x-auto" role="tablist">
+            {([
+              ["importar", "Importar"],
+              ["estructura", "Estructura"],
+              ["despiece", "Despiece"],
+              ["costo", "Costo"],
+              ["catalogo", "Catalogo"],
+            ] as [Tab, string][]).map(([id, label]) => (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={tab === id}
+                className={`tab whitespace-nowrap ${tab === id ? "tab-active" : ""}`}
+                onClick={() => setTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
+          {/* .cq marca este bloque como contenedor: los paneles se adaptan al
+              ancho de la columna, no al del viewport. */}
+          <div className="cq flex-1 min-w-0 pt-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
             {tab === "importar" && <ImportPanel spec={spec} onApply={aplicarImport} />}
             {tab === "estructura" && <SpecEditor spec={spec} catalog={catalog} onChange={setSpec} />}
             {tab === "despiece" && <PartsTable rows={rows} model={model} catalog={catalog} />}
@@ -238,10 +250,10 @@ export default function Page() {
               <CatalogEditor catalog={catalog} onChange={setCatalog} onReset={() => setCatalog(defaultCatalog)} />
             )}
           </div>
-        </section>
+        </aside>
       </div>
 
-      <footer className="max-w-[1500px] mx-auto px-4 py-6 text-[12px] text-muted">
+      <footer className="max-w-[1800px] w-full mx-auto px-4 py-6 xl:py-2 text-[12px] text-muted xl:shrink-0">
         Los precios del catalogo son ejemplos. Sustituyelos por los tuyos antes de cotizar.
       </footer>
     </main>

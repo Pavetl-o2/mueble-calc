@@ -38,8 +38,10 @@ export default function PartsTable({
             {totalPz} pz · {totalM2.toFixed(3)} m² CNC · {totalMl.toFixed(2)} ml canto
           </div>
         </div>
-        <div className="card overflow-hidden">
-          <table className="w-full text-[13px]">
+        <div className="card overflow-x-auto">
+          {/* El material va como sublinea de la pieza, no como columna: asi la
+              tabla cabe en el panel lateral sin esconder la ruta. */}
+          <table className="w-full text-[13px] min-w-[430px]">
             <thead>
               <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                 <th className="lbl px-3 py-2 font-medium">Pieza</th>
@@ -47,26 +49,29 @@ export default function PartsTable({
                 <th className="lbl px-2 py-2 text-right font-medium">Largo</th>
                 <th className="lbl px-2 py-2 text-right font-medium">Ancho</th>
                 <th className="lbl px-2 py-2 text-right font-medium">Esp</th>
-                <th className="lbl px-3 py-2 font-medium">Material</th>
                 <th className="lbl px-2 py-2 font-medium">Ruta</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="border-b border-rule/60 last:border-0">
+                <tr key={i} className="border-b border-rule/60 last:border-0 align-top">
                   <td className="px-3 py-1.5">
-                    {r.grupo}
-                    {r.acabado && (
-                      <span className="ml-1.5 text-[11px] text-bronze">
-                        + {catalog.acabados.find((a) => a.sku === r.acabado)?.nombre ?? r.acabado}
-                      </span>
-                    )}
+                    <div>
+                      {r.grupo}
+                      {r.acabado && (
+                        <span className="ml-1.5 text-[11px] text-bronze">
+                          + {catalog.acabados.find((a) => a.sku === r.acabado)?.nombre ?? r.acabado}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-muted">
+                      {partMaterialName(r.material, catalog)}
+                    </div>
                   </td>
                   <td className="num px-2 py-1.5 text-right">{r.qty}</td>
                   <td className="num px-2 py-1.5 text-right">{r.largo}</td>
                   <td className="num px-2 py-1.5 text-right">{r.ancho}</td>
                   <td className="num px-2 py-1.5 text-right text-muted">{r.espesor}</td>
-                  <td className="px-3 py-1.5 text-muted">{partMaterialName(r.material, catalog)}</td>
                   <td className="px-2 py-1.5">
                     <span
                       className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-medium ${rutaStyle[r.ruta]}`}
@@ -83,8 +88,8 @@ export default function PartsTable({
 
       <div>
         <h3 className="text-[15px] font-medium mb-2">Herrajes</h3>
-        <div className="card overflow-hidden">
-          <table className="w-full text-[13px]">
+        <div className="card overflow-x-auto">
+          <table className="w-full text-[13px] min-w-[380px]">
             <thead>
               <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                 <th className="lbl px-3 py-2 font-medium">Herraje</th>

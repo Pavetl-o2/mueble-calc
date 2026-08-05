@@ -133,7 +133,7 @@ export default function ImportPanel({
 
         {lectura?.ok && (
           <div className="space-y-4">
-            <div className="grid sm:grid-cols-4 gap-2 text-[13px]">
+            <div className="grid grid-cols-2 cq-cols-4 gap-2 text-[13px]">
               <Dato label="Entidades" valor={String(lectura.totalEntidades)} />
               <Dato label="Cotas" valor={String(lectura.cotas.length)} />
               <Dato label="Vistas" valor={String(lectura.vistas.length)} />
@@ -146,8 +146,8 @@ export default function ImportPanel({
 
             <div>
               <div className="lbl mb-2">Medidas encontradas — asigna las principales</div>
-              <div className="card overflow-hidden">
-                <table className="w-full text-[13px]">
+              <div className="card overflow-x-auto">
+                <table className="w-full text-[13px] min-w-[380px]">
                   <thead>
                     <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                       <th className="lbl px-3 py-2 font-medium">Medida</th>

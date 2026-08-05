@@ -33,25 +33,26 @@ export default function CatalogEditor({
       <section>
         <h3 className="text-[15px] font-medium mb-2">Materiales</h3>
         <div className="card overflow-x-auto">
-          <table className="w-full text-[13px] min-w-[720px]">
+          {/* La hoja y la unidad van como sublinea del material: asi los dos
+              campos editables caben en el panel lateral sin scroll horizontal. */}
+          <table className="w-full text-[13px] min-w-[400px]">
             <thead>
               <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                 <th className="lbl px-3 py-2 font-medium">Material</th>
-                <th className="lbl px-2 py-2 text-right font-medium">Hoja (mm)</th>
                 <th className="lbl px-2 py-2 text-right font-medium">Precio</th>
-                <th className="lbl px-2 py-2 font-medium">Por</th>
                 <th className="lbl px-3 py-2 text-right font-medium">Aprovech. %</th>
               </tr>
             </thead>
             <tbody>
               {catalog.materiales.map((mat, i) => (
-                <tr key={mat.sku} className="border-b border-rule/60 last:border-0">
+                <tr key={mat.sku} className="border-b border-rule/60 last:border-0 align-top">
                   <td className="px-3 py-1.5">
                     {mat.nombre}
-                    <div className="num text-[11px] text-muted">{mat.sku}</div>
-                  </td>
-                  <td className="num px-2 py-1.5 text-right text-muted">
-                    {mat.hojaAncho ? `${mat.hojaAncho} × ${mat.hojaLargo}` : "—"}
+                    <div className="num text-[11px] text-muted">
+                      {mat.hojaAncho
+                        ? `${mat.hojaAncho} × ${mat.hojaLargo} mm · por ${mat.precioPor}`
+                        : `por ${mat.precioPor}`}
+                    </div>
                   </td>
                   <td className="px-2 py-1.5 text-right">
                     <input
@@ -66,7 +67,6 @@ export default function CatalogEditor({
                       }
                     />
                   </td>
-                  <td className="px-2 py-1.5 text-[12px] text-muted">{mat.precioPor}</td>
                   <td className="px-3 py-1.5 text-right">
                     <input
                       type="number"
@@ -90,7 +90,7 @@ export default function CatalogEditor({
         </div>
       </section>
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 cq-cols-2 gap-6">
         <section>
           <h3 className="text-[15px] font-medium mb-2">Cantos (por ml)</h3>
           <SimpleTable
@@ -134,7 +134,7 @@ export default function CatalogEditor({
 
       <section>
         <h3 className="text-[15px] font-medium mb-2">Mano de obra e indirectos</h3>
-        <div className="card p-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="card p-3 grid grid-cols-1 cq-cols-2 cq-cols-3-lg gap-3">
           <NumField
             label="Corte CNC por pieza"
             value={catalog.manoObra.cortePorPieza}

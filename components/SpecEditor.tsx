@@ -42,7 +42,7 @@ export default function SpecEditor({
       {/* Envolvente */}
       <section>
         <h3 className="text-[15px] font-medium mb-2">Envolvente</h3>
-        <div className="card p-3 grid sm:grid-cols-3 gap-3">
+        <div className="card p-3 grid grid-cols-1 cq-cols-3 gap-3">
           <Num label="Ancho" v={spec.ancho} u="mm" on={(v) => set((s) => { s.ancho = v; })} />
           <Num label="Alto total" v={spec.alto} u="mm" on={(v) => set((s) => { s.alto = v; })} />
           <Num label="Profundidad" v={spec.prof} u="mm" on={(v) => set((s) => { s.prof = v; })} />
@@ -53,7 +53,7 @@ export default function SpecEditor({
       </section>
 
       {/* Base y cubierta */}
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 cq-cols-2 gap-6">
         <section>
           <h3 className="text-[15px] font-medium mb-2">Base</h3>
           <div className="card p-3 space-y-3">
@@ -276,7 +276,7 @@ export default function SpecEditor({
       </section>
 
       {/* Materiales y construccion */}
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 cq-cols-2 gap-6">
         <section>
           <h3 className="text-[15px] font-medium mb-2">Materiales</h3>
           <div className="card p-3 space-y-3">
@@ -321,9 +321,9 @@ function Num({
   on: (v: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <label className="text-[13px]">{label}</label>
-      <div className="flex items-center gap-1">
+    <div className="flex items-center justify-between gap-2 min-w-0">
+      <label className="text-[13px] min-w-0">{label}</label>
+      <div className="flex items-center gap-1 shrink-0">
         <input
           type="number"
           aria-label={label}

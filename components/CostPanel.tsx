@@ -27,7 +27,7 @@ export default function CostPanel({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 cq-cols-4 gap-3">
         <Stat label="Costo directo" value={m(cost.costoDirecto)} />
         <Stat label={`Overhead ${catalog.overheadPct}%`} value={m(cost.overhead)} />
         <Stat label={`Margen ${catalog.margenPct}%`} value={m(cost.margen)} />
@@ -65,13 +65,14 @@ export default function CostPanel({
 
       <div>
         <h3 className="text-[15px] font-medium mb-2">Desglose</h3>
-        <div className="card overflow-hidden">
-          <table className="w-full text-[13px]">
+        <div className="card overflow-x-auto">
+          {/* La unidad va junto a la cantidad en vez de en su propia columna:
+              asi el importe no se sale del panel lateral. */}
+          <table className="w-full text-[13px] min-w-[400px]">
             <thead>
               <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                 <th className="lbl px-3 py-2 font-medium">Concepto</th>
                 <th className="lbl px-2 py-2 text-right font-medium">Cant</th>
-                <th className="lbl px-2 py-2 font-medium">Un</th>
                 <th className="lbl px-2 py-2 text-right font-medium">P. unit</th>
                 <th className="lbl px-3 py-2 text-right font-medium">Importe</th>
               </tr>
@@ -83,8 +84,10 @@ export default function CostPanel({
                     <div>{l.concepto}</div>
                     {l.detalle && <div className="text-[11px] text-muted">{l.detalle}</div>}
                   </td>
-                  <td className="num px-2 py-1.5 text-right">{fmtQty(l.cantidad)}</td>
-                  <td className="px-2 py-1.5 text-[11px] text-muted">{l.unidad}</td>
+                  <td className="num px-2 py-1.5 text-right whitespace-nowrap">
+                    {fmtQty(l.cantidad)}
+                    <span className="ml-1 text-[11px] text-muted">{l.unidad}</span>
+                  </td>
                   <td className="num px-2 py-1.5 text-right text-muted">{m(l.precioUnit)}</td>
                   <td className="num px-3 py-1.5 text-right font-medium">{m(l.importe)}</td>
                 </tr>
@@ -97,8 +100,8 @@ export default function CostPanel({
       {cost.materialUso.length > 0 && (
         <div>
           <h3 className="text-[15px] font-medium mb-2">Consumo de material</h3>
-          <div className="card overflow-hidden">
-            <table className="w-full text-[13px]">
+          <div className="card overflow-x-auto">
+            <table className="w-full text-[13px] min-w-[440px]">
               <thead>
                 <tr className="bg-[#F3F5F1] border-b border-rule text-left">
                   <th className="lbl px-3 py-2 font-medium">Material</th>
