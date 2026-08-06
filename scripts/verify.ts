@@ -4,7 +4,7 @@ import { costModel, cutList, money } from "../lib/costing";
 import { defaultCatalog } from "../lib/catalog";
 import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
-import { leerCorteDxf } from "../lib/cnc";
+import { leerCorteDxf, tramosEn } from "../lib/cnc";
 import { aplicarAjuste, despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
 import { detectarEnsambles } from "../lib/cncEnsambles";
 import { extraerJson, imagenDemasiadoGrande, IMAGEN_MAX_BYTES, proveedorActivo } from "../lib/llm";
@@ -279,9 +279,13 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   const l = leerCorteDxf(dxfDeSegmentos(segs));
   chk(l.piezas.length === 4, `orientacion: se esperaban 4 piezas, hay ${l.piezas.length}`);
 
-  // Perfil normalizado: altura minima del contorno en 16 columnas. Dos
-  // piezas iguales bien orientadas tienen el mismo perfil.
-  const perfil = (c: (typeof l.piezas)[number]) => {
+  // Silueta normalizada: rejilla de 16x16 sobre la caja de la pieza, ya
+  // orientada. Se mide en el CENTRO de cada celda, no en sus bordes ni en
+  // los vertices del contorno: los vertices caen justo en los limites de
+  // la rejilla y una milesima de diferencia numerica los manda a la celda
+  // de al lado, que es ruido del medidor y no desalineacion real.
+  const N = 16;
+  const silueta = (c: (typeof l.piezas)[number]) => {
     const o = orientarPieza(c);
     const ca = Math.cos(o.giro);
     const sa = Math.sin(o.giro);
@@ -293,22 +297,27 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
     const y0 = Math.min(...ys);
     const w = Math.max(...xs) - x0 || 1;
     const h = Math.max(...ys) - y0 || 1;
-    const cols = new Array(16).fill(1);
-    for (const [x, y] of pts) {
-      const k = Math.min(15, Math.floor(((x - x0) / w) * 16));
-      cols[k] = Math.min(cols[k], (y - y0) / h);
+    const celdas: boolean[] = [];
+    for (let j = 0; j < N; j++) {
+      const y = y0 + ((j + 0.5) * h) / N;
+      const tramos = tramosEn(pts, y);
+      for (let i = 0; i < N; i++) {
+        const x = x0 + ((i + 0.5) * w) / N;
+        celdas.push(tramos.some(([a, b]) => x >= a && x <= b));
+      }
     }
-    return cols;
+    return celdas;
   };
 
-  const base = perfil(l.piezas[0]);
+  const base = silueta(l.piezas[0]);
   let peor = 0;
   for (const c of l.piezas) {
-    const f = perfil(c);
-    peor = Math.max(peor, ...f.map((v, i) => Math.abs(v - base[i])));
+    const f = silueta(c);
+    const distintas = f.reduce((a, v, i) => a + (v === base[i] ? 0 : 1), 0);
+    peor = Math.max(peor, distintas / (N * N));
   }
-  chk(peor < 0.05, `orientacion: las piezas no quedaron alineadas (desviacion ${peor.toFixed(3)})`);
-  console.log(`orientacion: 4 variantes giradas/espejeadas normalizadas (desviacion ${peor.toFixed(3)})`);
+  chk(peor < 0.02, `orientacion: las piezas no quedaron alineadas (${(peor * 100).toFixed(1)}% de silueta distinta)`);
+  console.log(`orientacion: 4 variantes giradas/espejeadas normalizadas (${(peor * 100).toFixed(1)}% de diferencia)`);
 }
 
 {
@@ -370,9 +379,68 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
 }
 
 {
+  // Piezas distintas entre si: un panel grande SIN huecos, un costado con
+  // huecos y un travesano. Es la forma de una silla, y el caso donde el
+  // armado de mesa fallaba.
+  const segs = [
+    ...rect(0, 0, 900, 800),               // panel: el de mayor area, sin huecos
+    ...rect(1100, 0, 700, 500),            // costado, mas chico
+    ...rect(1200, 100, 18, 90),            //   con una mortaja
+    ...rect(2000, 0, 600, 120),            // travesano
+  ];
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  chk(l.piezas.length === 3, `roles: se esperaban 3 piezas, hay ${l.piezas.length}`);
+
+  // El panel es el de MAYOR AREA aunque no tenga huecos. Antes se exigian
+  // huecos y eso elegia el costado.
+  const sinRoles = panelDe(l);
+  const areaMax = Math.max(...l.piezas.map((p) => p.areaMm2));
+  chk(
+    sinRoles?.areaMm2 === areaMax,
+    `roles: el panel deberia ser el de mayor area (${sinRoles?.areaMm2} vs ${areaMax})`
+  );
+
+  // La imagen puede corregirlo: si dice que otro es el panel, manda ella.
+  const otro = l.piezas.find((p) => p !== sinRoles)!;
+  chk(panelDe(l, { [otro.id]: "panel" })?.id === otro.id, "roles: la imagen deberia poder elegir el panel");
+
+  // Sin imagen, el rol sale de la geometria: un travesano de 120 mm no
+  // llega ni a media altura del mueble, asi que va acostado. El costado,
+  // que si llega, va de pie.
+  const op = opcionesSugeridas(l);
+  const trav = l.piezas.reduce((a, b) => (b.areaMm2 < a.areaMm2 ? b : a));
+  const costado = l.piezas.find((p) => p !== sinRoles && p !== trav)!;
+  const sin = proponerArmado(l, op);
+  const cSin = sin.colocaciones.find((c) => c.piezaId === trav.id)!;
+  chk(cSin.acostada, "roles: sin imagen el travesano bajo deberia acostarse por geometria");
+  chk(
+    !sin.colocaciones.find((c) => c.piezaId === costado.id)!.acostada,
+    "roles: sin imagen el costado alto deberia quedar de pie"
+  );
+
+  // Y la imagen tiene que poder CONTRADECIR a la geometria en ambos
+  // sentidos: es lo unico que justifica pedirla.
+  const dePie = proponerArmado(l, { ...op, roles: { [trav.id]: "lateral" } });
+  const cDePie = dePie.colocaciones.find((c) => c.piezaId === trav.id)!;
+  chk(!cDePie.acostada, "roles: con rol lateral el travesano deberia pararse");
+  chk(cDePie.fuente === "imagen", `roles: la fuente deberia ser "imagen", es "${cDePie.fuente}"`);
+  const acostado = proponerArmado(l, { ...op, roles: { [costado.id]: "horizontal" } });
+  chk(
+    acostado.colocaciones.find((c) => c.piezaId === costado.id)!.acostada,
+    "roles: con rol horizontal el costado deberia acostarse"
+  );
+  console.log("roles: la geometria acuesta el travesano y la imagen puede contradecirla en ambos sentidos");
+
+  // Piezas distintas => nada de molinete. Repartir en circulo tres piezas
+  // que no son intercambiables no describe ningun mueble.
+  const giros = new Set(sin.colocaciones.filter((c) => !c.acostada).map((c) => Math.round((c.giro * 180) / Math.PI)));
+  chk(!giros.has(120) && !giros.has(240), "roles: no deberia repartir en molinete piezas distintas");
+}
+
+{
   // El ajuste manual son deltas sobre la propuesta, y debe poder anularla.
   const base = {
-    piezaId: "x", rol: "vertical" as const, giro: 0, radio: 100, z: 700,
+    piezaId: "x", rol: "lateral" as const, giro: 0, radio: 100, z: 700,
     inclinacion: 0, acostada: false, giroLocal: 0, espejo: false,
     desliz: 0, fuente: "simetria" as const,
   };

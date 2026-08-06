@@ -84,8 +84,12 @@ const TOLERANCIA_MM = 3;
  * hombro: arriba solo estan las espigas, debajo esta el cuerpo entero.
  * Ese salto es el hombro, y los tramos que quedan encima son las espigas.
  */
-export function detectarLenguetas(c: ContornoCnc, orient?: Orientacion): Lengueta[] {
-  const o = orient ?? orientarPieza(c);
+export function detectarLenguetas(
+  c: ContornoCnc,
+  espesor?: number,
+  orient?: Orientacion
+): Lengueta[] {
+  const o = orient ?? orientarPieza(c, espesor);
   const ca = Math.cos(o.giro);
   const sa = Math.sin(o.giro);
   const s = o.espejo ? -1 : 1;
@@ -94,7 +98,7 @@ export function detectarLenguetas(c: ContornoCnc, orient?: Orientacion): Lenguet
   const xs = pts.map((p) => p[0]);
   const x0 = Math.min(...xs);
 
-  const canto = analizarCanto(pts);
+  const canto = analizarCanto(pts, espesor);
   if (!canto) return [];
 
   return canto.salientes.map(([a, b]) => ({
@@ -157,7 +161,7 @@ export function detectarEnsambles(
   const lenguetas: Record<string, Lengueta[]> = {};
   const verticales = piezas.filter((p) => p !== panel);
 
-  for (const p of verticales) lenguetas[p.id] = detectarLenguetas(p);
+  for (const p of verticales) lenguetas[p.id] = detectarLenguetas(p, espesor);
 
   const mortajas: Mortaja[] = [];
   if (panel) {

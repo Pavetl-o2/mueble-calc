@@ -22,7 +22,27 @@ import type { ModelResult, Part } from "./types";
 // bancos y taburetes flat-pack, que es de donde salio el modulo.
 // ---------------------------------------------------------------
 
-export type Rol = "panel" | "vertical" | "otro";
+/**
+ * Rol de una pieza dentro del mueble armado.
+ *
+ * Es el vocabulario con el que la imagen de referencia puede describir el
+ * armado. Antes solo habia "panel" y "vertical", que alcanza para una mesa
+ * de patas iguales pero no para una silla: no habia forma de decir "esto
+ * es un travesano acostado" ni "esto va en el plano del costado", asi que
+ * la imagen no podia cambiar nada aunque acertara.
+ *
+ *   panel      superficie horizontal principal (cubierta, asiento)
+ *   horizontal otra pieza acostada (travesano, repisa, refuerzo)
+ *   lateral    pieza de pie en el plano de los costados
+ *   frontal    pieza de pie en el plano del frente y el respaldo
+ *   otro       no se sabe; se trata como lateral
+ */
+export type Rol = "panel" | "horizontal" | "lateral" | "frontal" | "otro";
+
+/** Roles que van de pie. El resto se acuesta. */
+export function esDePie(r: Rol): boolean {
+  return r === "lateral" || r === "frontal" || r === "otro";
+}
 
 /**
  * Colocacion en coordenadas de la familia, no en Euler crudo. Los angulos
@@ -58,7 +78,7 @@ export interface Colocacion {
    */
   desliz: number;
   /** De donde salio la colocacion, para poder decirlo en pantalla. */
-  fuente: "ensamble" | "simetria";
+  fuente: "ensamble" | "imagen" | "simetria";
 }
 
 /** Correccion manual sobre lo que propuso el armador. Todo son deltas. */
@@ -100,6 +120,69 @@ export interface Orientacion {
   alto: number;
 }
 
+const rot = (pts: Pt[], a: number): Pt[] =>
+  pts.map(([x, y]) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)] as Pt);
+
+/**
+ * Giros a probar: los que dejan HORIZONTAL a alguna arista de la pieza,
+ * por arriba y por abajo.
+ *
+ * Se sacan de la propia geometria en vez de barrer el circulo porque asi
+ * el juego de candidatos no depende de como venga girada la pieza en la
+ * hoja de corte: dos copias de la misma pata, nesteadas en angulos
+ * distintos, generan el mismo conjunto y acaban en la misma pose. Un
+ * barrido ciego a paso fijo no da esa garantia, y ademas cuesta cien
+ * veces mas.
+ */
+function girosCandidatos(pts: Pt[]): number[] {
+  const dosPi = Math.PI * 2;
+  const out: number[] = [];
+  const agregar = (g: number) => {
+    const n = ((g % dosPi) + dosPi) % dosPi;
+    if (!out.some((v) => Math.abs(v - n) < 1e-4 || dosPi - Math.abs(v - n) < 1e-4)) out.push(n);
+  };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const dx = pts[i + 1][0] - pts[i][0];
+    const dy = pts[i + 1][1] - pts[i][1];
+    if (Math.hypot(dx, dy) < 2) continue;
+    const a = Math.atan2(dy, dx);
+    agregar(-a);
+    agregar(-a + Math.PI);
+  }
+  return out.length ? out : [0];
+}
+
+/**
+ * Que tan bien se para la pieza en esta pose: cuanto abarca su apoyo en
+ * el piso y cuanto canto plano ofrece por arriba.
+ *
+ * Es el criterio de reserva para las piezas que no declaran espigas. Un
+ * costado en A no tiene un canto de union reconocible, pero si tiene dos
+ * pies que caen en la misma linea, y esa linea solo queda horizontal en
+ * la pose de armado.
+ */
+function estabilidad(pts: Pt[]): number {
+  const ys = pts.map((p) => p[1]);
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const banda = Math.max(1, (yMax - yMin) * 0.02);
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let tope = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[i + 1];
+    if (Math.abs(ay - by) > banda) continue;
+    if (ay - yMin < banda && by - yMin < banda) {
+      x0 = Math.min(x0, ax, bx);
+      x1 = Math.max(x1, ax, bx);
+    } else if (yMax - ay < banda && yMax - by < banda) {
+      tope += Math.abs(bx - ax);
+    }
+  }
+  return (x1 > x0 ? x1 - x0 : 0) + tope;
+}
+
 /**
  * Deja una pieza en su posicion de armado dentro de su propio plano.
  *
@@ -109,62 +192,57 @@ export interface Orientacion {
  * vienen, cada una acaba con un canto distinto contra la cubierta y el
  * mueble no cierra.
  *
- * Tres pasos:
- *   1. La arista recta mas larga se pone horizontal. En una pieza de
- *      tablero suele ser el canto que topa con otra pieza.
- *   2. De los dos cantos largos se elige el que tiene mas detalle
- *      (lenguetas, escalones) como cara de union: el canto liso es el
- *      que apoya en el piso.
- *   3. Se refleja si hace falta para que el pie caiga siempre del mismo
- *      lado. Reflejar una pieza plana es voltearla de cara, que en un
- *      tablero es legitimo.
+ * Hay dos criterios, y cual aplica lo decide la pieza:
+ *
+ *   1. Si trae ESPIGAS, ellas mandan: una espiga es la pieza diciendo
+ *      por donde se une, y ese canto va arriba. Se mide la linea de
+ *      hombro para no confundir la union con un recorte cualquiera; la
+ *      de un faldon de mesa mide 970 de sus 1122 mm, la de una esquina
+ *      recortada unos pocos.
+ *   2. Si no, se para donde mejor se sostiene: el apoyo mas ancho abajo
+ *      y el canto mas plano arriba. Un costado en A no tiene espigas
+ *      pero si dos pies, y solo hay una pose en que ambos tocan el piso.
+ *
+ * Antes se buscaba el giro que pusiera mas perimetro a escuadra. Eso
+ * funciona en una pieza rectilinea y se cae en cuanto la arista mas
+ * larga es diagonal: el costado en A de una silla salia tumbado 60°,
+ * porque lo que quedaba horizontal era una de sus patas.
+ *
+ * Al final se refleja si hace falta, para que el pie caiga siempre del
+ * mismo lado. Reflejar una pieza plana es voltearla de cara, que en un
+ * tablero es legitimo.
  */
-export function orientarPieza(c: ContornoCnc): Orientacion {
-  let mejor = 0;
-  let ang = 0;
-  for (let i = 0; i < c.ext.length - 1; i++) {
-    const dx = c.ext[i + 1][0] - c.ext[i][0];
-    const dy = c.ext[i + 1][1] - c.ext[i][1];
-    const d = Math.hypot(dx, dy);
-    if (d > mejor) {
-      mejor = d;
-      ang = Math.atan2(dy, dx);
+export function orientarPieza(c: ContornoCnc, espesor?: number): Orientacion {
+  const giros = girosCandidatos(c.ext);
+  const dimMax = Math.max(c.bbox.x1 - c.bbox.x0, c.bbox.y1 - c.bbox.y0) || 1;
+
+  let giro = giros[0];
+  let hombro = 0;
+  for (const g of giros) {
+    const canto = analizarCanto(rot(c.ext, g), espesor);
+    if (canto && canto.anchoHombro > hombro) {
+      hombro = canto.anchoHombro;
+      giro = g;
     }
   }
 
-  const rot = (pts: Pt[], a: number): Pt[] =>
-    pts.map(([x, y]) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)] as Pt);
+  // La linea de hombro tiene que abarcar buena parte de la pieza para
+  // creerle. Si no, lo que se encontro es ruido del contorno y no la
+  // union, y se decide por como se para.
+  if (hombro < dimMax * 0.5) {
+    let mejor = -1;
+    for (const g of giros) {
+      const s = estabilidad(rot(c.ext, g));
+      if (s > mejor) {
+        mejor = s;
+        giro = g;
+      }
+    }
+  }
 
-  let giro = -ang;
   let pts = rot(c.ext, giro);
-
-  // Cual de los dos cantos largos es el de union: el que tiene espigas.
-  // Se prueban las dos posiciones y gana la que las encuentra. Contar
-  // vertices no basta: una pieza sencilla puede tener los mismos a cada
-  // lado y entonces queda de cabeza.
-  const volteada = rot(pts, Math.PI);
-  const arriba = analizarCanto(pts);
-  const abajo = analizarCanto(volteada);
-  const puntua = (k: ReturnType<typeof analizarCanto>) => (k ? k.salto : 0);
-
-  const ys = pts.map((p) => p[1]);
-  const h = Math.max(...ys) - Math.min(...ys) || 1;
-
-  let voltear = puntua(abajo) > puntua(arriba);
-  if (!arriba && !abajo) {
-    // Sin espigas por ningun lado se cae al criterio anterior: el canto
-    // con mas detalle suele ser el que se une a algo.
-    const y0 = Math.min(...ys);
-    const y1 = Math.max(...ys);
-    const densidad = (lim: number) => pts.filter((p) => Math.abs(p[1] - lim) < h * 0.06).length;
-    voltear = densidad(y0) > densidad(y1);
-  }
-  if (voltear) {
-    giro += Math.PI;
-    pts = volteada;
-  }
-
   const ys2 = pts.map((p) => p[1]);
+  const h = Math.max(...ys2) - Math.min(...ys2) || 1;
   const yMin = Math.min(...ys2);
   const xs = pts.map((p) => p[0]);
   const cxb = (Math.min(...xs) + Math.max(...xs)) / 2;
@@ -313,11 +391,24 @@ function nombrarPieza(c: ContornoCnc, i: number, l: LecturaCnc): string {
 // ---------------------------------------------------------------
 
 /** El panel es el contorno de mayor area, y normalmente el que trae mortajas. */
-export function panelDe(l: LecturaCnc): ContornoCnc | undefined {
+export function panelDe(l: LecturaCnc, roles?: Record<string, Rol>): ContornoCnc | undefined {
   if (!l.piezas.length) return undefined;
+
+  // Si la imagen dijo cual es el panel, manda ella: reconocer la
+  // superficie principal es justo lo que una foto hace bien y la
+  // geometria no.
+  const dicho = l.piezas.find((p) => roles?.[p.id] === "panel");
+  if (dicho) return dicho;
+
+  // Si no, la de MAYOR AREA. Los huecos son un desempate, no un filtro:
+  // antes se exigia tenerlos y en una silla eso elige el costado (que
+  // recibe el travesano) en vez del asiento, que es la pieza principal.
+  const mayor = l.piezas.reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
   const conHuecos = l.piezas.filter((p) => p.huecos.length > 0);
-  const pool = conHuecos.length ? conHuecos : l.piezas;
-  return pool.reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
+  if (!conHuecos.length) return mayor;
+  const mayorConHuecos = conHuecos.reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
+  // El desempate solo aplica si son comparables en tamano.
+  return mayorConHuecos.areaMm2 >= mayor.areaMm2 * 0.85 ? mayorConHuecos : mayor;
 }
 
 /** Centro de cada mortaja del panel, relativo al centro del panel. */
@@ -358,11 +449,12 @@ export function opcionesSugeridas(l: LecturaCnc): OpcionesArmado {
   // El angulo se reporta y el usuario lo aplica si de verdad va inclinada.
   const inclinacion = 0;
 
-  // El alto sale del lado CORTO de la caja de la pieza vertical, no del
-  // largo: una pata que viene dibujada en diagonal, o unida a su faldon en
-  // una sola pieza en L, tiene una caja mucho mas grande que su altura real.
+  // El alto se mide sobre la pieza YA ORIENTADA, no sobre su caja en la
+  // hoja de corte. Una pata dibujada en diagonal, o unida a su faldon en
+  // una sola pieza en L, tiene una caja que no se parece a su altura: hay
+  // que pararla primero y despues medirla.
   const alto = verticales.length
-    ? Math.round(Math.max(...verticales.map((v) => v.ancho)))
+    ? Math.round(Math.max(...verticales.map((v) => orientarPieza(v, l.espesor).alto)))
     : 750;
 
   return { alto, inclinacion, radio };
@@ -376,7 +468,7 @@ export function opcionesSugeridas(l: LecturaCnc): OpcionesArmado {
 export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
   const notas: string[] = [];
   const colocaciones: Colocacion[] = [];
-  const panel = panelDe(l);
+  const panel = panelDe(l, op.roles);
   if (!panel) {
     return {
       colocaciones: [], alto: 0, alturaPiso: 0,
@@ -412,16 +504,92 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
   const porPieza = new Map(ens.ensambles.map((e) => [e.piezaId, e]));
   const inc = (op.inclinacion * Math.PI) / 180;
 
+  // Dos familias, y elegir mal es lo que descuadraba todo lo que no fuera
+  // una mesa. El molinete (repartir en angulos iguales alrededor del eje)
+  // solo tiene sentido si las piezas son INTERCAMBIABLES: cuatro patas
+  // iguales. Con piezas distintas -un asiento, un costado, un travesano-
+  // rotarlas 120 grados cada una no describe ningun mueble.
+  const areas = verticales.map((v) => v.areaMm2);
+  const congruentes =
+    verticales.length >= 3 && areas.every((a) => Math.abs(a - areas[0]) < areas[0] * 0.08);
+  const radial = congruentes && ens.ensambles.length >= 2;
+
+  // Caja del panel: da los planos donde se apoyan las piezas de pie.
+  const semiAncho = panel ? Math.max(panel.largo, panel.ancho) / 2 : op.radio;
+  const semiProf = panel ? Math.min(panel.largo, panel.ancho) / 2 : op.radio;
+
+  // Las orientaciones se resuelven antes que los roles porque el rol
+  // depende de que tan alta queda la pieza YA PARADA, y eso no se sabe
+  // mirando su caja en la hoja de corte.
+  const orient = new Map(verticales.map((v) => [v.id, orientarPieza(v, t)] as const));
+
+  /**
+   * Rol de una pieza. Si la imagen lo dijo, manda la imagen; si no, se
+   * deduce de la geometria.
+   *
+   * La deduccion es una sola regla, pero cambia mucho: una pieza que
+   * parada no llega ni a media altura del mueble no puede ser una pata
+   * ni un costado, es un travesano y va acostado. Antes todo lo que no
+   * era el panel se paraba, y por eso el travesano de una silla salia
+   * clavado de pie junto al asiento.
+   */
+  const rolDe = (v: ContornoCnc): Rol => {
+    const dicho = op.roles?.[v.id];
+    if (dicho) return dicho;
+    if (radial) return "lateral";
+    const alt = orient.get(v.id)?.alto ?? 0;
+    return alt < op.alto * 0.6 ? "horizontal" : "otro";
+  };
+  let iLat = 0;
+  let iFro = 0;
+
   verticales.forEach((v, k) => {
-    const o = orientarPieza(v);
+    const o = orient.get(v.id)!;
+    const rol = rolDe(v);
+
+    // Piezas acostadas: travesanos y repisas. Van planas a media altura,
+    // no de pie. Antes todo lo que no fuera el panel se paraba.
+    if (!esDePie(rol)) {
+      colocaciones.push({
+        piezaId: v.id,
+        rol,
+        giro: 0,
+        radio: 0,
+        desliz: 0,
+        z: Math.round(op.alto * 0.38),
+        inclinacion: 0,
+        acostada: true,
+        giroLocal: o.giro,
+        espejo: o.espejo,
+        fuente: op.roles?.[v.id] ? "imagen" : "simetria",
+      });
+      return;
+    }
+
     const e = porPieza.get(v.id);
     const m = e ? ens.mortajas.find((x) => x.idx === e.mortaja) : undefined;
     const lg = e ? ens.lenguetas[v.id]?.[e.lengueta] : undefined;
 
-    let giro = (k / Math.max(1, n)) * Math.PI * 2;
-    let radio = op.radio;
+    let giro: number;
+    let radio: number;
     let desliz = 0;
-    let fuente: Colocacion["fuente"] = "simetria";
+    let fuente: Colocacion["fuente"];
+
+    if (radial) {
+      giro = (k / Math.max(1, n)) * Math.PI * 2;
+      radio = op.radio;
+      fuente = "simetria";
+    } else if (rol === "frontal") {
+      // Frente y respaldo: se alternan las dos caras opuestas.
+      giro = iFro++ % 2 === 0 ? Math.PI / 2 : -Math.PI / 2;
+      radio = Math.max(20, semiProf - t / 2);
+      fuente = op.roles?.[v.id] ? "imagen" : "simetria";
+    } else {
+      // Costados: idem sobre el otro par de caras.
+      giro = iLat++ % 2 === 0 ? 0 : Math.PI;
+      radio = Math.max(20, semiAncho - t / 2);
+      fuente = op.roles?.[v.id] ? "imagen" : "simetria";
+    }
 
     if (m && lg) {
       // La mortaja esta en una esquina y sirve a dos lados; se toma el
@@ -441,7 +609,7 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
 
     colocaciones.push({
       piezaId: v.id,
-      rol: op.roles?.[v.id] ?? "vertical",
+      rol,
       giro,
       radio,
       z: op.alto - t,
@@ -455,6 +623,17 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
   });
 
   notas.push(...ens.notas);
+  notas.push(
+    radial
+      ? `Las ${n} piezas verticales son intercambiables, asi que se reparten en molinete cada ${Math.round(360 / Math.max(1, n))}°.`
+      : `Las piezas no son intercambiables, asi que se colocan sobre las caras de la caja en vez de repartirse en circulo.`
+  );
+  if (!op.roles) {
+    const acostadas = colocaciones.filter((c) => c.acostada && c.rol !== "panel").length;
+    notas.push(
+      `Sin imagen de referencia el rol de cada pieza se deduce de su tamano: se acuestan las que paradas no llegarian ni a media altura (${acostadas}) y se paran las demas. Una foto del mueble armado lo corrige.`
+    );
+  }
 
   // El piso queda donde apoya la pieza mas baja.
   let piso = op.alto - t;
@@ -465,7 +644,7 @@ export function proponerArmado(l: LecturaCnc, op: OpcionesArmado): Armado {
     }
     const v = verticales.find((x) => x.id === c.piezaId);
     if (!v) continue;
-    piso = Math.min(piso, c.z - orientarPieza(v).alto * Math.cos(c.inclinacion));
+    piso = Math.min(piso, c.z - orientarPieza(v, t).alto * Math.cos(c.inclinacion));
   }
 
   const iguales = verticales.every(

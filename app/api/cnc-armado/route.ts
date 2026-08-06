@@ -88,16 +88,38 @@ Datos ya medidos del archivo de corte (son exactos, no los contradigas):
     body.anguloDetectado != null ? `${body.anguloDetectado}°` : "ninguno (todo a escuadra)"
   }
 
-Tu trabajo es decir COMO SE ARMA, no donde va cada punto. Reglas:
-- Asigna un rol a cada pieza: "panel" (superficie horizontal, suele ser la de mayor area y la que trae los huecos), "vertical" (pata, costado o faldon) u "otro".
-- Normalmente hay UN solo panel.
-- "alto" es la altura TOTAL del mueble armado en mm, leida de las proporciones de la imagen. Una mesa de comedor ronda 750, una de centro 400, un banco 450.
-- "inclinacion" en grados es cuanto abren las piezas verticales respecto a la vertical. Si en la imagen las patas se ven abiertas hacia afuera usa el angulo detectado arriba; si se ven rectas, 0.
-- "radio" en mm es la distancia del centro del mueble a cada pieza vertical.
-- Si algo no se puede leer de la imagen, omitelo: NO lo inventes.
+Tu trabajo es decir COMO SE ARMA, no donde va cada punto. Esta es la parte
+que la geometria NO puede resolver sola y donde de verdad ayudas.
+
+Asigna un rol a cada pieza. Mira la foto y decide como queda cada una en
+el mueble armado:
+- "panel": la superficie horizontal principal (cubierta, asiento, tapa).
+  Normalmente hay UNA sola y suele ser la de mayor area.
+- "horizontal": otra pieza que va ACOSTADA (travesano, repisa, refuerzo).
+- "lateral": pieza de PIE en el plano de los costados.
+- "frontal": pieza de PIE en el plano del frente o el respaldo.
+- "otro": solo si de verdad no se puede decidir.
+
+Ojo: no todo lo que no es el panel va de pie. Un travesano entre dos
+costados va acostado, y ponerlo vertical desarma el modelo. Fijate en la
+foto como esta cada pieza, no en su tamano.
+
+Las piezas iguales entre si suelen repetirse en el mueble (dos costados,
+cuatro patas). Las de tamanos distintos casi nunca son intercambiables.
+
+Ademas:
+- "alto": altura TOTAL del mueble armado en mm, leida de las proporciones
+  de la imagen. Una mesa de comedor ronda 750, una de centro 400, una
+  silla 450 al asiento.
+- "inclinacion" en grados: cuanto se apartan de la vertical las piezas de
+  pie. En corte CNC casi todo va a plomo, asi que responde 0 salvo que en
+  la foto se vea claramente abierto.
+- "radio" en mm: distancia del centro del mueble a cada pieza de pie.
+- Si algo no se puede leer de la imagen, omitelo: NO lo inventes. Vale mas
+  omitir un numero que inventarlo, porque el dibujo ya trae los exactos.
 
 Responde SOLO con JSON valido, sin markdown:
-{"roles":{"id":"panel|vertical|otro"},"alto":numero,"inclinacion":numero,"radio":numero,"familia":"texto corto","confianza":"alta|media|baja","observaciones":["texto"]}`;
+{"roles":{"id":"panel|horizontal|lateral|frontal|otro"},"alto":numero,"inclinacion":numero,"radio":numero,"familia":"texto corto","confianza":"alta|media|baja","observaciones":["texto"]}`;
 
   const r = await pedirVision({
     prompt,
@@ -124,7 +146,9 @@ Responde SOLO con JSON valido, sin markdown:
   const roles: Record<string, string> = {};
   for (const [id, rol] of Object.entries((out.roles ?? {}) as Record<string, unknown>)) {
     if (!validos.has(id)) continue;
-    if (rol === "panel" || rol === "vertical" || rol === "otro") roles[id] = rol;
+    if (["panel", "horizontal", "lateral", "frontal", "otro"].includes(rol as string)) {
+      roles[id] = rol as string;
+    }
   }
 
   const num = (v: unknown, min: number, max: number) => {

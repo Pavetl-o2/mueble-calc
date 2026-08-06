@@ -369,6 +369,15 @@ export interface Canto {
   salientes: [number, number][];
   /** Cuanto se ensancha al pasar el hombro. 1 = canto liso, sin espigas. */
   salto: number;
+  /**
+   * Cuanto material hay a la altura del hombro, en mm.
+   *
+   * Es lo que dice si el canto es de verdad la union de la pieza o solo
+   * una esquina que casualmente parece espiga: la linea de hombro de un
+   * faldon de mesa mide casi todo su largo, la de un recorte cualquiera
+   * unos milimetros.
+   */
+  anchoHombro: number;
 }
 
 /**
@@ -378,7 +387,7 @@ export interface Canto {
  * pasar el hombro: encima solo estan las espigas, debajo el cuerpo
  * entero. Si no hay salto, el canto es liso y no tiene espigas.
  */
-export function analizarCanto(pts: Pt[]): Canto | null {
+export function analizarCanto(pts: Pt[], espesor?: number): Canto | null {
   const ys = pts.map((p) => p[1]);
   const yMax = Math.max(...ys);
   const alto = yMax - Math.min(...ys);
@@ -395,12 +404,18 @@ export function analizarCanto(pts: Pt[]): Canto | null {
     if (ancho > base * 2.5) {
       const hombro = yMax - d;
       const vuelo = d;
-      return {
-        hombro,
-        vuelo,
-        salientes: tramosEn(pts, hombro + vuelo / 2),
-        salto: ancho / base,
-      };
+      let salientes = tramosEn(pts, hombro + vuelo / 2);
+
+      // Filtro de sensatez. Sin el, cualquier muesca o redondeo del canto
+      // pasa por espiga: en una silla salian "espigas" de 0.8 mm con 4 mm
+      // de vuelo sobre tablero de 18. Una espiga real es al menos tan
+      // ancha como el tablero y sobresale lo que tenga que atravesar.
+      if (espesor && espesor > 0) {
+        salientes = salientes.filter(([a, b]) => b - a >= espesor * 0.6);
+        if (!salientes.length || vuelo < espesor * 0.35) return null;
+      }
+
+      return { hombro, vuelo, salientes, salto: ancho / base, anchoHombro: ancho };
     }
   }
   return null;
