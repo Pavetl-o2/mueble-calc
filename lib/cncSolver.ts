@@ -76,16 +76,21 @@ const cruz3 = (a: V3, b: V3): V3 => [
   a[0] * b[1] - a[1] * b[0],
 ];
 const norma = (a: V3) => Math.hypot(a[0], a[1], a[2]);
+/** Coseno entre dos direcciones, para comparar orientaciones. */
+const punto3 = (a: V3, b: V3) =>
+  (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / ((norma(a) * norma(b)) || 1);
 
 /**
  * Boca y fondo de una junta de canto, en coordenadas de la pieza.
  *
- * En una junta pasante las dos parejas coinciden en su centro, pero en
- * una media madera no: cada tablero entra hasta que su canto topa con
- * el fondo de la caja del otro, y como las dos cajas suelen tener
- * profundidades distintas -en la mesa, 60 y 89 mm, que suman el alto
- * del faldon- sus centros quedan a 15 mm uno del otro. Comparando
- * centros, ningun cruce cerraba.
+ * En una junta pasante las dos parejas coinciden en su centro. En una
+ * media madera no, y el punto que coincide es el FONDO de las dos
+ * cajas: ahi es donde se parte el solape. Cada tablero se ranura hasta
+ * ese plano comun -uno desde arriba, otro desde abajo- y por eso el
+ * material de cada uno llena exactamente el hueco del otro. Si en vez
+ * de eso se hace coincidir la boca de una con el fondo de la otra, los
+ * tableros quedan montados a medias: en el banco de costillas eso
+ * repartia las laminas por un metro y medio de altura.
  */
 const boca = (j: Junta): Pt => [
   j.centro[0] + j.normal[0] * (j.fondo / 2),
@@ -109,6 +114,16 @@ export function dirMundo(p: Pose, d: Pt): V3 {
 const TOL_CIERRE = 12;
 /** Tope de copias de una misma pieza, por si un archivo se descontrola. */
 const MAX_COPIAS = 8;
+/**
+ * Tope de poses evaluadas en un armado.
+ *
+ * El solver corre en el navegador cada vez que cambia el archivo, asi
+ * que no puede permitirse tardar. Con juntas todas iguales -un banco de
+ * costillas tiene 116 cajas de 20 mm que encajan todas con todas- el
+ * numero de combinaciones se dispara, y vale mas entregar lo resuelto
+ * diciendo que se quedo a medias que colgar la pestana.
+ */
+const PRESUPUESTO = 300_000;
 
 /**
  * Cuantas copias de cada pieza pide el dibujo.
@@ -193,6 +208,117 @@ function multiplicidad(
     if (!cambio) break;
   }
   return n;
+}
+
+/**
+ * Serie de juntas iguales, en linea y a paso constante.
+ *
+ * Es el patron de un larguero de banco de costillas, de un lomo con
+ * repisas o de una maqueta de curvas de nivel: una pieza larga peinada
+ * con N cajas identicas donde se enfila una familia de piezas.
+ *
+ * Hay que reconocerlo aparte porque rompe el supuesto del emparejado por
+ * medida. En este banco las 116 cajas miden 20 mm -el espesor del
+ * tablero- asi que TODAS encajan con todas: cualquier costilla entra en
+ * cualquier ranura y el solver, que elige por medida, encadenaba
+ * costillas unas sobre otras. Lo que distingue una ranura de la de al
+ * lado no es su ancho sino su FONDO, que en el larguero recorre una V
+ * de 158 a 60 y de vuelta a 158, y esa V es literalmente la curva del
+ * asiento.
+ */
+interface Serie {
+  piezaId: string;
+  /** Las juntas de la serie, ordenadas a lo largo de la pieza. */
+  juntas: Junta[];
+}
+
+function seriesDe(porPieza: Record<string, Junta[]>): Serie[] {
+  const out: Serie[] = [];
+  for (const [piezaId, js] of Object.entries(porPieza)) {
+    const grupos = new Map<string, Junta[]>();
+    for (const j of js) {
+      const k = `${j.tipo}:${Math.round(j.largo)}`;
+      const g = grupos.get(k);
+      if (g) g.push(j);
+      else grupos.set(k, [j]);
+    }
+    for (const g of grupos.values()) {
+      if (g.length < 4) continue;
+      // La alineacion se mide sobre la BOCA de cada caja, no sobre su
+      // centro: el centro esta a media profundidad y las profundidades
+      // varian -en el banco van de 60 a 158 mm-, asi que los centros
+      // dibujan la curva del asiento y no una recta. Las bocas, en
+      // cambio, estan todas sobre el mismo canto.
+      const bocas = g.map(boca);
+      const a = bocas[0];
+      const b = bocas[bocas.length - 1];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 1) continue;
+      const u: Pt = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+      const desvio = bocas.map((q) => Math.abs(u[0] * (q[1] - a[1]) - u[1] * (q[0] - a[0])));
+      if (Math.max(...desvio) > 2) continue;
+      // Y a paso regular.
+      const s = g
+        .map((j, i) => ({ j, t: u[0] * (bocas[i][0] - a[0]) + u[1] * (bocas[i][1] - a[1]) }))
+        .sort((p, q) => p.t - q.t);
+      const pasos = s.slice(1).map((p, i) => p.t - s[i].t);
+      const medio = pasos.reduce((x, y) => x + y, 0) / pasos.length;
+      if (medio < 1 || pasos.some((p) => Math.abs(p - medio) > medio * 0.15)) continue;
+      out.push({ piezaId, juntas: s.map((p) => p.j) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Reparte la familia que enfila un peine, en orden.
+ *
+ * Con las juntas todas iguales, la geometria local no dice que pieza va
+ * en que ranura; pero la serie completa si. Las profundidades del peine
+ * y las de las piezas que enfila son dos sucesiones monotonas, y solo
+ * hay una forma de emparejarlas que respete el orden: la mas honda con
+ * la mas honda. En el banco eso deja cada costilla en su sitio y
+ * reconstruye la curva sin mas dato que el dibujo.
+ *
+ * Devuelve, por cada junta del peine, la pieza que le toca.
+ */
+function repartirSeries(
+  piezas: ContornoCnc[],
+  porPieza: Record<string, Junta[]>,
+  espesor: number,
+  invertir: boolean
+): {
+  asignado: Map<Junta, string>;
+  serieDe: Map<Junta, number>;
+  familia: Map<string, number>;
+  peines: Set<string>;
+} {
+  const asignado = new Map<Junta, string>();
+  const serieDe = new Map<Junta, number>();
+  const familia = new Map<string, number>();
+  const peines = new Set<string>();
+  seriesDe(porPieza).forEach((serie, idx) => {
+    // Candidatas: las piezas -que no son el propio peine ni otro peine-
+    // con una junta que encaje en la serie.
+    const cand: { id: string; fondo: number }[] = [];
+    for (const j of serie.juntas) serieDe.set(j, idx);
+    for (const p of piezas) {
+      if (p.id === serie.piezaId) continue;
+      const js = (porPieza[p.id] ?? []).filter((j) =>
+        serie.juntas.some((k) => encajan(k, j, espesor))
+      );
+      if (!js.length || js.length > 4) continue;
+      cand.push({ id: p.id, fondo: Math.min(...js.map((j) => j.fondo)) });
+    }
+    if (cand.length < serie.juntas.length) return;
+
+    const porFondo = [...serie.juntas].sort((a, b) => a.fondo - b.fondo);
+    cand.sort((a, b) => (invertir ? b.fondo - a.fondo : a.fondo - b.fondo));
+    porFondo.forEach((j, i) => asignado.set(j, cand[i].id));
+    for (const c of cand) familia.set(c.id, idx);
+    peines.add(serie.piezaId);
+  });
+  return { asignado, serieDe, familia, peines };
 }
 
 function dentro(poly: Pt[], x: number, y: number): boolean {
@@ -311,7 +437,7 @@ function poseDeJunta(
     // La pieza entra hasta el fondo: su boca queda al ras del fondo de
     // la caja contraria, que es lo que hace que las dos caras queden
     // enrasadas al cruzarse.
-    origenLocal = boca(nueva);
+    origenLocal = fondoDe(nueva);
     destino = alMundo(basePose, fondoDe(base));
   } else if (!recibe(nueva)) {
     // La pieza nueva mete su espiga. La espiga atraviesa el espesor de
@@ -350,6 +476,7 @@ function poseDeJunta(
 
 interface JuntaLibre {
   instancia: string;
+  piezaId: string;
   pose: Pose;
   junta: Junta;
   /** Centro de la junta ya en el espacio, para comparar rapido. */
@@ -365,12 +492,16 @@ interface JuntaLibre {
  * puede entrar de cuatro maneras y las cuatro son validas por separado;
  * con dos juntas solo una las satisface a las dos.
  */
-export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura {
+function resolverUno(
+  piezas: ContornoCnc[],
+  espesor: number,
+  invertir: boolean
+): Armadura & { series: number } {
   const notas: string[] = [];
   if (!piezas.length) {
     return {
       instancias: [], uniones: [], juntasPorPieza: {}, sueltas: [],
-      juntasLibres: 0, notas: ["Sin piezas."],
+      juntasLibres: 0, notas: ["Sin piezas."], series: 0,
     };
   }
 
@@ -379,10 +510,22 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
 
   const porId = new Map(piezas.map((p) => [p.id, p]));
   const cupo = multiplicidad(piezas, inv.porPieza, espesor);
+  // Reparto de las series ANTES de propagar: con las juntas todas
+  // iguales, decidirlo sobre la marcha es imposible.
+  const { asignado, serieDe, familia, peines } = repartirSeries(
+    piezas, inv.porPieza, espesor, invertir
+  );
+  // Orientacion comun de cada serie. Las piezas que enfila un peine son
+  // paralelas entre si -eso es lo que hace que sea un peine-, asi que en
+  // cuanto se coloca la primera, las demas heredan su orientacion. Sin
+  // esto cada costilla elegia su cara por separado y el banco salia en
+  // abanico.
+  const orientSerie = new Map<number, { u: V3; v: V3 }>();
   const raiz = piezas.reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
 
   // La pieza mayor se acuesta y se centra: es el marco de referencia.
-  // Cual sea no cambia el mueble, solo desde donde se mira.
+  // Cual sea no cambia el mueble, solo desde donde se mira, y el
+  // conjunto se endereza al final.
   const cx = (raiz.bbox.x0 + raiz.bbox.x1) / 2;
   const cy = (raiz.bbox.y0 + raiz.bbox.y1) / 2;
   const uR: V3 = [1, 0, 0];
@@ -402,12 +545,15 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
 
   const libres: JuntaLibre[] = (inv.porPieza[raiz.id] ?? []).map((j) => ({
     instancia: instancias[0].id,
+    piezaId: raiz.id,
     pose: poseRaiz,
     junta: j,
     mundo: alMundo(poseRaiz, j.centro),
   }));
 
   const sinColocar = new Set(piezas.filter((p) => p !== raiz).map((p) => p.id));
+  let gasto = 0;
+  let agotado = false;
 
   for (let vuelta = 0; vuelta < piezas.length * MAX_COPIAS; vuelta++) {
     // Centro de lo ya armado, para medir contra el que tan lejos cae
@@ -452,26 +598,61 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
       modo: "pasante" | "media";
       largo: number;
       contra: string;
+      serie?: number;
+      alineada: boolean;
       lejania: number;
       altura: number;
       choque: number;
       paralela: boolean;
     } | null = null;
 
-    for (const p of piezas) {
+    // Dos pasadas. La primera le exige evidencia a los peines; solo si
+    // no queda nada colocable se admite uno con una sola junta cerrada.
+    for (const estricto of [true, false]) {
+      if (mejor || agotado) break;
+      for (const p of piezas) {
       const usadas = copias.get(p.id) ?? 0;
       if (usadas >= (cupo.get(p.id) ?? 1)) continue;
       const juntas = inv.porPieza[p.id] ?? [];
       if (!juntas.length) continue;
 
       for (const libre of libres) {
-        for (const jn of juntas) {
+        // Si la junta pertenece a una serie ya repartida, solo admite la
+        // pieza que le toca. Sin esto, cualquiera entra en cualquiera.
+        const duena = asignado.get(libre.junta);
+        if (duena && duena !== p.id) continue;
+        // Dos piezas de la misma familia no se cuelgan una de otra: van
+        // las dos enfiladas en el peine. Sin esta regla las costillas
+        // del banco se encadenaban entre si -sus cajas miden todas lo
+        // mismo, asi que encajan- y el banco salia en escalera.
+        const fam = familia.get(p.id);
+        if (fam != null && familia.get(libre.piezaId) === fam) continue;
+        const sid = serieDe.get(libre.junta);
+        const yaOrientada = sid != null ? orientSerie.get(sid) : undefined;
+        // Poda del reparto en el otro sentido: si la pieza que se
+        // intenta poner es el peine y la junta libre es de una pieza que
+        // el enfila, ya se sabe QUE caja del peine le toca. Sin esto hay
+        // que probar las 29 cajas del larguero contra cada junta libre.
+        const suyas = peines.has(p.id)
+          ? juntas.filter((j) => {
+              const d = asignado.get(j);
+              return d === undefined || d === libre.piezaId;
+            })
+          : juntas;
+        for (const jn of suyas) {
           const modo = encajan(libre.junta, jn, espesor);
           if (!modo) continue;
           for (const r of [1, -1]) {
             for (const s of [1, -1]) {
+              if (++gasto > PRESUPUESTO) {
+                agotado = true;
+                break;
+              }
               const pose = poseDeJunta(libre.pose, libre.junta, jn, modo, r, s);
               if (!pose) continue;
+              const alineada =
+                !yaOrientada ||
+                (punto3(pose.u, yaOrientada.u) > 0.99 && punto3(pose.v, yaOrientada.v) > 0.99);
 
               // Cuantas OTRAS juntas de la pieza caen sobre juntas
               // libres ya colocadas. Eso es lo que distingue la pose
@@ -488,7 +669,7 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
                   const m = encajan(l.junta, otra, espesor);
                   if (!m) continue;
                   const dest =
-                    m === "media" ? alMundo(pose, boca(otra)) : alMundo(pose, otra.centro);
+                    m === "media" ? alMundo(pose, fondoDe(otra)) : alMundo(pose, otra.centro);
                   const ref =
                     m === "media" ? alMundo(l.pose, fondoDe(l.junta)) : l.mundo;
                   const d = norma(resta3(dest, ref));
@@ -535,6 +716,8 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
                 modo,
                 largo: jn.largo,
                 contra: libre.instancia,
+                serie: sid,
+                alineada,
                 // Cuanto se sale la pieza de la huella del mueble.
                 // Cuando una junta deja libre el signo -y una pieza
                 // colgada de una sola junta siempre lo deja- las dos
@@ -550,6 +733,13 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
                 choque,
                 paralela,
               };
+              // Un peine es el espinazo del mueble y trae decenas de
+              // juntas iguales: colgarlo de UNA sola deja su pose sin
+              // determinar y arrastra a todo lo que venga despues. En el
+              // banco, el segundo larguero se colocaba en tercer lugar
+              // con una unica junta cerrada y se llevaba la mitad de las
+              // costillas a otra altura. Espera a tener dos.
+              if (estricto && peines.has(p.id) && cierra.length < 2) continue;
               if (!mejor) {
                 mejor = cand;
                 continue;
@@ -560,6 +750,8 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
               const mejorQue =
                 cierra.length !== mejor.cierra.length
                   ? cierra.length > mejor.cierra.length
+                  : alineada !== mejor.alineada
+                  ? alineada
                   : Math.abs(choque - mejor.choque) > 0.02
                   ? choque < mejor.choque
                   : paralela !== mejor.paralela
@@ -578,6 +770,7 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
       }
     }
 
+    }
     if (!mejor) break;
 
     const copia = (copias.get(mejor.piezaId) ?? 0) + 1;
@@ -594,6 +787,9 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
     for (const l of mejor.cierra) {
       uniones.push({ a: l.instancia, b: id, largo: l.junta.largo, modo: mejor.modo });
     }
+    if (mejor.serie != null && !orientSerie.has(mejor.serie)) {
+      orientSerie.set(mejor.serie, { u: mejor.pose.u, v: mejor.pose.v });
+    }
 
     // Las juntas usadas dejan de estar libres, y las de la pieza recien
     // puesta entran al juego.
@@ -602,10 +798,40 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
     const usadasPropias = new Set(mejor.propias);
     for (const j of inv.porPieza[mejor.piezaId] ?? []) {
       if (usadasPropias.has(j)) continue;
-      libres.push({ instancia: id, pose: mejor.pose, junta: j, mundo: alMundo(mejor.pose, j.centro) });
+      libres.push({
+        instancia: id,
+        piezaId: mejor.piezaId,
+        pose: mejor.pose,
+        junta: j,
+        mundo: alMundo(mejor.pose, j.centro),
+      });
     }
   }
 
+  // Enderezado final. El armado se resuelve con la pieza mayor
+  // acostada, que es lo correcto cuando esa pieza es una cubierta o un
+  // asiento. Pero si es un larguero -largo y estrecho- el mueble corre a
+  // lo largo de el y queda tumbado de lado: el banco de costillas salia
+  // bien armado y acostado. Se endereza girando el conjunto YA resuelto,
+  // no cambiando la pose de arranque: el arranque tambien mueve los
+  // desempates, y al tocarlo se perdian juntas que ya cerraban.
+  if (raiz.largo / Math.max(1, raiz.ancho) >= 3) {
+    const gira = (v: V3): V3 => [v[0], v[2], -v[1]];
+    for (const inst of instancias) {
+      inst.pose = {
+        o: gira(inst.pose.o),
+        u: gira(inst.pose.u),
+        v: gira(inst.pose.v),
+        w: gira(inst.pose.w),
+      };
+    }
+  }
+
+  if (agotado) {
+    notas.push(
+      "El archivo tiene demasiadas combinaciones de junta y se corto la busqueda antes de terminar: lo que falta hay que acomodarlo a mano."
+    );
+  }
   const sueltas = [...sinColocar];
   if (sueltas.length) {
     notas.push(
@@ -631,7 +857,27 @@ export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura
     sueltas,
     juntasLibres: libres.length,
     notas,
+    series: peines.size,
   };
+}
+
+/**
+ * Arma el mueble. Si el dibujo trae series, prueba los dos ordenes de
+ * reparto y se queda con el que cierre mas juntas.
+ *
+ * Hace falta porque el sentido de la correlacion depende del mueble y no
+ * se puede fijar por decreto. En el banco de costillas, donde el
+ * larguero se ahonda hacia los extremos igual que crecen las laminas,
+ * las dos series suben a la vez; en una media madera de solape
+ * constante suben al reves. Emparejar mas hondo con mas hondo acierta en
+ * el primer caso y falla en el segundo, asi que se prueban ambos y
+ * decide el resultado, que es lo unico que sabe cual era.
+ */
+export function resolverArmado(piezas: ContornoCnc[], espesor: number): Armadura {
+  const directo = resolverUno(piezas, espesor, false);
+  if (!directo.series) return directo;
+  const inverso = resolverUno(piezas, espesor, true);
+  return inverso.uniones.length > directo.uniones.length ? inverso : directo;
 }
 
 /** Cota mas baja del armado, para apoyar el piso del visor. */

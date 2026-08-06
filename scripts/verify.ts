@@ -574,6 +574,60 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
 }
 
 {
+  // SERIE. Un larguero peinado con seis cajas iguales a paso constante y
+  // seis laminas que se enfilan en el. Todas las cajas miden lo mismo,
+  // asi que emparejar por medida no distingue nada: es el caso donde el
+  // solver encadenaba piezas unas sobre otras.
+  const t = 18;
+  const anillo = (p: [number, number][]): [number, number, number, number][] =>
+    p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+  // Larguero 700x200, cajas desde el canto de arriba, fondos 40..90.
+  const fondos = [40, 50, 60, 70, 80, 90];
+  const larguero: [number, number][] = [[0, 0], [700, 0], [700, 200]];
+  for (let i = fondos.length - 1; i >= 0; i--) {
+    const x = 60 + i * 100;
+    const f = fondos[i];
+    larguero.push([x + 9, 200], [x + 9, 200 - f], [x - 9, 200 - f], [x - 9, 200]);
+  }
+  larguero.push([0, 200]);
+
+  // Laminas: cada una con una caja desde su canto de abajo, de fondo
+  // complementario para que el solape cierre.
+  const laminas = fondos.map((f, i) => {
+    const y0 = 400 + i * 300;
+    const h = 200;
+    const w = 240 + i * 4; // anchos distintos: son piezas distintas
+    const d = 200 - f;
+    const p: [number, number][] = [
+      [0, y0], [w / 2 - 9, y0], [w / 2 - 9, y0 + d], [w / 2 + 9, y0 + d],
+      [w / 2 + 9, y0], [w, y0], [w, y0 + h], [0, y0 + h],
+    ];
+    return anillo(p);
+  });
+
+  const l = leerCorteDxf(dxfDeSegmentos([...anillo(larguero), ...laminas.flat()]));
+  chk(l.piezas.length === 7, `serie: se esperaban 7 piezas, hay ${l.piezas.length}`);
+
+  const arm = resolverArmado(l.piezas, t);
+  chk(arm.instancias.length === 7, `serie: se esperaban 7 instancias, hay ${arm.instancias.length}`);
+  chk(arm.uniones.length === 6, `serie: se esperaban 6 uniones, hay ${arm.uniones.length}`);
+  chk(!arm.sueltas.length, `serie: quedaron sueltas (${arm.sueltas.join(",")})`);
+
+  // Y sobre todo: cada lamina en SU sitio. Si el solver las hubiera
+  // encadenado, varias caerian en la misma posicion.
+  const xs = arm.instancias
+    .slice(1)
+    .map((i) => Math.round(alMundo(i.pose, [0, 0])[0]))
+    .sort((a, b) => a - b);
+  const juntas = xs.slice(1).filter((x, k) => Math.abs(x - xs[k]) < 50).length;
+  chk(juntas === 0, `serie: ${juntas} lamina(s) apiladas en el mismo sitio (${xs.join(",")})`);
+  console.log(`serie: ${arm.instancias.length - 1} laminas repartidas en su propio sitio del peine`);
+}
+
+{
   // Un dibujo SIN juntas no debe inventar un armado: se reporta que no
   // hay con que, y el visor cae a la propuesta por parametros.
   const segs = [...rect(0, 0, 800, 500), ...rect(1000, 0, 400, 300)];
