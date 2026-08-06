@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { leerCorteDxf, type LecturaCnc } from "@/lib/cnc";
+import { leerCortesDxf, type LecturaCnc } from "@/lib/cnc";
 import {
   opcionesSugeridas,
   panelDe,
@@ -61,10 +61,13 @@ export default function CncPanel({
   const matDefault = catalog.materiales[0]?.sku ?? "";
   const cantoDefault = catalog.cantos[0]?.sku ?? "";
 
-  async function cargarDxf(file: File) {
+  async function cargarDxf(files: File[]) {
     setError(null);
     setImgNotas([]);
-    const l = leerCorteDxf(await file.text());
+    const hojas = await Promise.all(
+      files.map(async (f) => ({ nombre: f.name, contenido: await f.text() }))
+    );
+    const l = leerCortesDxf(hojas);
     if (!l.ok) {
       setError(l.error ?? "No se pudo leer el archivo.");
       onEstado(null);
@@ -76,13 +79,17 @@ export default function CncPanel({
       material[p.id] = matDefault;
       cantear[p.id] = false;
     }
-    setArchivo(file.name);
+    setArchivo(
+      files.length === 1
+        ? files[0].name
+        : `${files.length} hojas: ${files.map((f) => f.name).join(", ")}`
+    );
     onEstado({
       lectura: l,
       asig: { material, cantear, cantoSku: cantoDefault, espesor: l.espesor ?? 18 },
       opciones: opcionesSugeridas(l),
       armar: false,
-      nombre: file.name.replace(/\.dxf$/i, ""),
+      nombre: files[0].name.replace(/\.dxf$/i, ""),
       ajustes: {},
     });
   }
@@ -188,17 +195,23 @@ export default function CncPanel({
             </p>
           </div>
           <label className="btn btn-primary cursor-pointer w-fit">
-            Elegir archivo DXF de corte
+            Elegir DXF de corte
             <input
               type="file"
               accept=".dxf"
+              multiple
               className="sr-only"
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) cargarDxf(f);
+                const fs = Array.from(e.target.files ?? []);
+                if (fs.length) cargarDxf(fs);
               }}
             />
           </label>
+          <p className="text-[12px] text-muted -mt-1">
+            Podes elegir varias a la vez. Un CAM reparte el mueble en hojas de material, y con
+            media caja de piezas el armado no cierra: si tu descarga trae Sheet 1, Sheet 2 y
+            demas, cargalas todas juntas.
+          </p>
           {error && (
             <div className="card border-bronze bg-bronzeLight p-3 text-[13px] text-bronze">
               {error}

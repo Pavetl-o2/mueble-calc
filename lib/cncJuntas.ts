@@ -208,42 +208,161 @@ const aRecta = (x: Pt, p: Pt, u: Pt) => Math.abs(cruz(u, resta(x, p)));
 /**
  * Juntas del canto: escalones rectangulares del contorno.
  *
- * Un escalon son tres rectas seguidas donde la primera y la tercera van
- * en sentidos opuestos y la del medio les es perpendicular. Si el
- * contorno gira dos veces hacia afuera es una espiga; si gira dos veces
- * hacia adentro es una caja. El sentido lo da el signo del producto
- * cruz, y por eso el anillo se normaliza a antihorario antes.
+ * Un escalon son tres rectas donde la primera y la tercera van en
+ * sentidos opuestos y la del medio les es perpendicular. Si el contorno
+ * gira dos veces hacia afuera es una espiga; si gira dos veces hacia
+ * adentro es una caja. El sentido lo da el signo del producto cruz, y
+ * por eso el anillo se normaliza a antihorario antes.
  *
- * Las medidas salen de los cruces de las rectas, no de los vertices:
- * asi el redondeo de las esquinas no acorta la junta.
+ * Las tres rectas NO vienen seguidas vertice a vertice en un archivo de
+ * CAM real. Entre flanco y fondo casi siempre hay un chaflan a 45, un
+ * hueso de perro o un rebaje que se hunde unos milimetros para que la
+ * pieza que entra asiente. Exigir adyacencia estricta es lo que hacia
+ * que una estanteria de Opendesk -que lleva alivio en TODAS sus juntas-
+ * no diera ni una sola junta de canto.
+ *
+ * Por eso el recorrido no clasifica las aristas por su largo, sino por
+ * el PAPEL que juegan: desde un flanco se camina hacia adelante hasta
+ * dar con el flanco opuesto, se admite UN fondo perpendicular por el
+ * camino, y todo lo demas es alivio mientras no sume mas que un tablero
+ * de ancho. Un chaflan de 5.7 mm y un hombro de 5 mm no se distinguen
+ * por su medida -son casi iguales- pero si por donde caen.
+ *
+ * Cuando el alivio se comio el fondo entero, el fondo se reconstruye
+ * entre las puntas de los dos flancos: ahi es donde asienta la pieza
+ * que entra, y no en el rebaje que se hunde cuatro milimetros mas.
  */
-function juntasDeCanto(c: ContornoCnc, espesor: number): Junta[] {
-  const p = simplificar(anilloLimpio(c.ext), EPS_SIMPLIFICAR);
-  const ar = aristasDe(p, Math.max(3, espesor * 0.4));
-  const n = ar.length;
+function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number): Junta[] {
+  const n = anillo.length;
   if (n < 3) return [];
+
+  const ar: Arista[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = anillo[i];
+    const b = anillo[(i + 1) % n];
+    const d = resta(b, a);
+    const len = largoDe(d);
+    if (len > 1e-6) ar.push({ a, b, dir: unit(d), len });
+  }
+  const N = ar.length;
+  if (N < 3) return [];
+
+  /** Por debajo de esto una arista no puede hacer de flanco ni de fondo. */
+  const minLado = Math.max(3, espesor * 0.35);
+  /** Un alivio de fresa no pasa de un tablero de ancho. */
+  const maxRuido = Math.max(6, espesor * 1.6);
+
+  /**
+   * Raiz de una espiga: se camina hacia afuera del escalon por encima
+   * del alivio hasta topar con un lado de verdad del contorno. Ahi es
+   * donde la espiga es mas ancha, y es su seccion mas ancha la que topa
+   * contra la mortaja; la punta, mas fina por el chaflan, solo guia la
+   * entrada.
+   *
+   * Solo se cruza geometria OBLICUA al flanco. Es lo unico que separa un
+   * chaflan de un hombro: los dos miden cinco milimetros y pico, pero el
+   * chaflan va a 45 grados y el hombro sigue el canto. En la silla, que
+   * viene toda a escuadra, cruzar el hombro estiraba una espiga de 65 a
+   * 90 y la dejaba sin pareja.
+   */
+  const raizDe = (desde: number, flanco: Pt, haciaAtras: boolean): Pt => {
+    let k = desde;
+    let andado = 0;
+    for (let paso = 0; paso < 4; paso++) {
+      const j = haciaAtras ? (k - 1 + N) % N : (k + 1) % N;
+      const e = ar[j];
+      andado += e.len;
+      if (andado > maxRuido) break;
+      const cos = Math.abs(punto(flanco, e.dir));
+      // Ni paralela al flanco ni perpendicular a el: solo el bisel.
+      const oblicua = cos > 0.12 && cos < 0.95;
+      if (!oblicua && e.len > 1) break;
+      k = j;
+    }
+    return haciaAtras ? ar[k].a : ar[k].b;
+  };
 
   const dim = Math.min(c.bbox.x1 - c.bbox.x0, c.bbox.y1 - c.bbox.y0);
   const out: Junta[] = [];
-  for (let i = 0; i < n; i++) {
-    const e1 = ar[i];
-    const e2 = ar[(i + 1) % n];
-    const e3 = ar[(i + 2) % n];
-    if (punto(e1.dir, e3.dir) > -0.95) continue; // flancos opuestos
-    if (Math.abs(punto(e1.dir, e2.dir)) > 0.12) continue; // fondo perpendicular
 
-    const g1 = cruz(e1.dir, e2.dir);
-    const g2 = cruz(e2.dir, e3.dir);
+  for (let i = 0; i < N; i++) {
+    const e1 = ar[i];
+    if (e1.len < minLado) continue;
+
+    // Hacia adelante hasta el flanco opuesto, admitiendo un fondo y el
+    // alivio que quepa.
+    let ruido = 0;
+    let iFondo = -1;
+    let iOpuesto = -1;
+    for (let paso = 1; paso < N; paso++) {
+      const j = (i + paso) % N;
+      const e = ar[j];
+      if (e.len >= minLado && punto(e1.dir, e.dir) < -0.95) {
+        iOpuesto = j;
+        break;
+      }
+      if (iFondo < 0 && e.len >= minLado && Math.abs(punto(e1.dir, e.dir)) <= 0.12) {
+        iFondo = j;
+        continue;
+      }
+      ruido += e.len;
+      if (ruido > maxRuido) break;
+    }
+    if (iOpuesto < 0) continue;
+
+    const e3 = ar[iOpuesto];
+    let p12: Pt | null;
+    let p23: Pt | null;
+    let fondo: number;
+    let g1: number;
+    let g2: number;
+    let baseFondo: Pt;
+    let dirFondo: Pt;
+
+    if (iFondo >= 0) {
+      const e2 = ar[iFondo];
+      p12 = corte(e1.a, e1.dir, e2.a, e2.dir);
+      p23 = corte(e2.a, e2.dir, e3.a, e3.dir);
+      if (!p12 || !p23) continue;
+      // El fondo se mide desde el arranque de los flancos, que estan
+      // sobre el canto principal, hasta la recta del medio.
+      fondo = (aRecta(e1.a, e2.a, e2.dir) + aRecta(e3.b, e2.a, e2.dir)) / 2;
+      g1 = cruz(e1.dir, e2.dir);
+      g2 = cruz(e2.dir, e3.dir);
+      baseFondo = e2.a;
+      dirFondo = e2.dir;
+    } else {
+      // Sin fondo dibujado: lo levantan las puntas de los dos flancos.
+      p12 = e1.b;
+      p23 = e3.a;
+      const d = resta(p23, p12);
+      if (largoDe(d) < 1e-6) continue;
+      dirFondo = unit(d);
+      // El fondo tiene que cruzar de un flanco al otro, no correr a lo
+      // largo de ellos.
+      if (Math.abs(punto(e1.dir, dirFondo)) > 0.35) continue;
+      baseFondo = p12;
+      fondo =
+        (Math.abs(punto(e1.dir, resta(e1.b, e1.a))) +
+          Math.abs(punto(e1.dir, resta(e3.a, e3.b)))) / 2;
+      g1 = cruz(e1.dir, dirFondo);
+      g2 = cruz(dirFondo, e3.dir);
+    }
+
     if (g1 * g2 <= 0) continue; // los dos giros al mismo lado, o no es escalon
     const espiga = g1 > 0;
+    let largo = largoDe(resta(p23, p12));
 
-    const p12 = corte(e1.a, e1.dir, e2.a, e2.dir);
-    const p23 = corte(e2.a, e2.dir, e3.a, e3.dir);
-    if (!p12 || !p23) continue;
-    const largo = largoDe(resta(p23, p12));
-    // El fondo se mide desde el arranque de los flancos, que estan sobre
-    // el canto principal, hasta la recta del medio.
-    const fondo = (aRecta(e1.a, e2.a, e2.dir) + aRecta(e3.b, e2.a, e2.dir)) / 2;
+    if (espiga) {
+      const r1 = raizDe(i, e1.dir, true);
+      const r2 = raizDe(iOpuesto, e3.dir, false);
+      const eje = unit(resta(p23, p12));
+      const raiz = Math.abs(punto(eje, resta(r2, r1)));
+      if (raiz > largo && raiz <= largo + 2 * fondo + 1) {
+        largo = raiz;
+        fondo = (aRecta(r1, baseFondo, dirFondo) + aRecta(r2, baseFondo, dirFondo)) / 2;
+      }
+    }
 
     // Filtros de sensatez. El largo de una junta es un detalle de la
     // pieza, no un lado entero: sin este tope los propios costados del
@@ -277,6 +396,37 @@ function juntasDeCanto(c: ContornoCnc, espesor: number): Junta[] {
       normal: espiga ? e1.dir : [-e1.dir[0], -e1.dir[1]],
       etiqueta: `${espiga ? "espiga" : "caja"} ${Math.round(largo)}`,
     });
+  }
+  return out;
+}
+
+/**
+ * Juntas del canto de una pieza, mirando el contorno de las dos
+ * maneras.
+ *
+ * El contorno simplificado es el que hay que mirar primero: tirar los
+ * vertices del teselado endereza los lados y deja las medidas limpias.
+ * Pero el mismo filtro que endereza un arco se traga un chaflan de 4 mm,
+ * y con el se traga la junta entera.
+ *
+ * Asi que despues se mira el contorno crudo, y de ahi solo se recogen
+ * los escalones que el simplificado no vio. Ni una medida ya conocida se
+ * reemplaza: sobre geometria teselada el crudo mide peor -en la mesa
+ * movia la pose de la pata lo bastante para perder el cruce de las
+ * medias maderas-, y lo que aporta no es precision sino las juntas que
+ * el otro no alcanza a ver.
+ */
+function juntasDeCanto(c: ContornoCnc, espesor: number): Junta[] {
+  const crudo = anilloLimpio(c.ext);
+  const out = escalonesDe(simplificar(crudo, EPS_SIMPLIFICAR), c, espesor);
+  for (const j of escalonesDe(crudo, c, espesor)) {
+    const yaEsta = out.some(
+      (q) =>
+        q.tipo === j.tipo &&
+        largoDe(resta(q.centro, j.centro)) < Math.max(espesor, j.largo * 0.5) &&
+        Math.abs(q.largo - j.largo) <= espesor
+    );
+    if (!yaEsta) out.push(j);
   }
   return out;
 }
@@ -324,9 +474,33 @@ function juntasDeCara(c: ContornoCnc, espesor: number): Junta[] {
         }
         if (!(s1 - s0 >= espesor)) continue;
 
+        // Pero la envolvente tampoco es la medida: lo que entra en la
+        // mortaja es la raiz de la espiga, y la raiz necesita la
+        // seccion ENTERA. Asi que el largo util es el tramo seguido
+        // donde el hueco tiene el ancho completo. La distincion importa
+        // porque los dos alivios de esquina que existen tiran para
+        // lados opuestos: un hueso de perro ensancha la punta -y ahi la
+        // envolvente y la seccion entera coinciden, que es el caso del
+        // banco-, mientras que un chaflan la estrecha -y ahi la
+        // envolvente miente: en Opendesk daba 56 donde la espiga que
+        // encaja mide 48-.
+        const tramo = tramoDeAnchoEntero(p, u, nrm, tMedio, sep, s0, s1);
+        if (!tramo) continue;
+        // Recortar la punta solo si el recorte es del tamano de un
+        // alivio. Un alivio lo acota el radio de la fresa y nunca llega
+        // a medio ancho de ranura; si falta mas que eso, la punta no
+        // esta achaflanada sino cortada en diagonal, y entonces la
+        // espiga viene sesgada igual y entra por completo. La mortaja de
+        // la mesa es un paralelogramo: medida a secciones perpendiculares
+        // daba 31 de los 90 que mide.
+        const maxRecorte = sep * 0.5;
+        const u0 = tramo[0] - s0 <= maxRecorte ? tramo[0] : s0;
+        const u1 = s1 - tramo[1] <= maxRecorte ? tramo[1] : s1;
+        if (!(u1 - u0 >= espesor)) continue;
+
         const centro: Pt = [
-          u[0] * ((s0 + s1) / 2) + nrm[0] * tMedio,
-          u[1] * ((s0 + s1) / 2) + nrm[1] * tMedio,
+          u[0] * ((u0 + u1) / 2) + nrm[0] * tMedio,
+          u[1] * ((u0 + u1) / 2) + nrm[1] * tMedio,
         ];
         // La misma ranura puede salir por mas de un par de paredes.
         if (
@@ -339,17 +513,75 @@ function juntasDeCara(c: ContornoCnc, espesor: number): Junta[] {
         out.push({
           piezaId: c.id,
           tipo: "ranura",
-          largo: Math.round((s1 - s0) * 10) / 10,
+          largo: Math.round((u1 - u0) * 10) / 10,
           fondo: Math.round(sep * 10) / 10,
           centro,
           eje: u,
           normal: [0, 0],
-          etiqueta: `ranura ${Math.round(s1 - s0)}`,
+          etiqueta: `ranura ${Math.round(u1 - u0)}`,
         });
       }
     }
   }
   return out;
+}
+
+/** Punto dentro de un anillo cerrado, por numero de cruces. */
+function dentroDe(anillo: Pt[], q: Pt): boolean {
+  let d = false;
+  for (let i = 0, j = anillo.length - 1; i < anillo.length; j = i++) {
+    const [xi, yi] = anillo[i];
+    const [xj, yj] = anillo[j];
+    if (yi > q[1] !== yj > q[1] && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) d = !d;
+  }
+  return d;
+}
+
+/**
+ * Tramo seguido mas largo donde el hueco cubre la banda entera.
+ *
+ * Se recorre la ranura a lo largo preguntando, en cada paso, si sus dos
+ * paredes siguen ahi. Donde un chaflan corta la esquina la respuesta es
+ * que no, y ese tramo no cuenta: por angosto que sea el corte, la raiz
+ * de la espiga no pasa. Donde un hueso de perro agranda la esquina la
+ * respuesta sigue siendo que si, y el tramo cuenta entero.
+ */
+function tramoDeAnchoEntero(
+  anillo: Pt[],
+  u: Pt,
+  nrm: Pt,
+  tMedio: number,
+  sep: number,
+  s0: number,
+  s1: number
+): [number, number] | null {
+  const t = sep / 2 - Math.min(0.4, sep * 0.05);
+  const paso = Math.max(0.2, sep / 24);
+  const en = (s: number) => {
+    const a: Pt = [u[0] * s + nrm[0] * (tMedio + t), u[1] * s + nrm[1] * (tMedio + t)];
+    const b: Pt = [u[0] * s + nrm[0] * (tMedio - t), u[1] * s + nrm[1] * (tMedio - t)];
+    return dentroDe(anillo, a) && dentroDe(anillo, b);
+  };
+
+  let mejor: [number, number] | null = null;
+  let arranque: number | null = null;
+  let previo = s0;
+  for (let s = s0; s <= s1 + paso / 2; s += paso) {
+    const q = Math.min(s, s1);
+    if (en(q)) {
+      if (arranque === null) arranque = q;
+      previo = q;
+    } else if (arranque !== null) {
+      if (!mejor || previo - arranque > mejor[1] - mejor[0]) mejor = [arranque, previo];
+      arranque = null;
+    }
+  }
+  if (arranque !== null && (!mejor || previo - arranque > mejor[1] - mejor[0])) {
+    mejor = [arranque, previo];
+  }
+  if (!mejor) return null;
+  // El muestreo se queda medio paso corto en cada punta.
+  return [mejor[0] - paso / 2, mejor[1] + paso / 2];
 }
 
 /** Todas las juntas de una pieza. */
@@ -476,5 +708,6 @@ export function inventarioJuntas(piezas: ContornoCnc[], espesor: number): Resume
         .join("; ")}.`
     );
   }
+
   return { porPieza, clases, notas };
 }

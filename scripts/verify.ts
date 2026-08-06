@@ -4,7 +4,7 @@ import { costModel, cutList, money } from "../lib/costing";
 import { defaultCatalog } from "../lib/catalog";
 import { partsDxf } from "../lib/exporters";
 import { leerDxf, proponerEnvolvente } from "../lib/dxf";
-import { leerCorteDxf, tramosEn } from "../lib/cnc";
+import { leerCorteDxf, leerCortesDxf, tramosEn } from "../lib/cnc";
 import { aplicarAjuste, despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
 import { detectarEnsambles } from "../lib/cncEnsambles";
 import { inventarioJuntas } from "../lib/cncJuntas";
@@ -625,6 +625,123 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   const juntas = xs.slice(1).filter((x, k) => Math.abs(x - xs[k]) < 50).length;
   chk(juntas === 0, `serie: ${juntas} lamina(s) apiladas en el mismo sitio (${xs.join(",")})`);
   console.log(`serie: ${arm.instancias.length - 1} laminas repartidas en su propio sitio del peine`);
+}
+
+{
+  // ALIVIOS DE FRESA. La misma junta dos veces: a escuadra y con el
+  // chaflan de 45 que un CAM real le pone a cada rincon para que la
+  // pieza asiente. Las dos tienen que leerse igual. Este es el caso que
+  // dejaba una estanteria de Opendesk en cero juntas.
+  const t = 12;
+  const anillo = (p: [number, number][]): [number, number, number, number][] =>
+    p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+
+  // Ranura de canto 12x180 en un tablero de 380x1100, con alivio en V al
+  // fondo: el fondo recto no existe en el dibujo, hay que reconstruirlo.
+  const conAlivio: [number, number][] = [
+    [0, 0], [380, 0], [380, 1100], [0, 1100], [0, 556],
+    [180, 556], [184, 552], [184, 548], [180, 544], [0, 544],
+  ];
+  const aEscuadra: [number, number][] = [
+    [0, 0], [380, 0], [380, 1100], [0, 1100], [0, 556], [180, 556], [180, 544], [0, 544],
+  ];
+  for (const [nombre, pts] of [["con alivio", conAlivio], ["a escuadra", aEscuadra]] as const) {
+    const l = leerCorteDxf(dxfDeSegmentos(anillo(pts as [number, number][])));
+    const js = inventarioJuntas(l.piezas, t).porPieza[l.piezas[0]?.id] ?? [];
+    const caja = js.find((j) => j.tipo === "caja");
+    chk(!!caja, `alivios: la ranura ${nombre} no se reconocio`);
+    chk(
+      !!caja && Math.abs(caja.largo - 12) <= 1 && Math.abs(caja.fondo - 180) <= 2,
+      `alivios: la ranura ${nombre} midio ${caja?.largo}x${caja?.fondo}, se esperaba 12x180`
+    );
+  }
+
+  // Espiga de 48 de raiz que se afina a 40 en la punta por el chaflan.
+  // Lo que topa contra la mortaja es la raiz, no la punta.
+  const espigada: [number, number][] = [
+    [0, 0], [0, 400], [180, 400], [180, 244], [184, 240], [189, 240],
+    [189, 200], [184, 200], [180, 196], [180, 0],
+  ];
+  const le = leerCorteDxf(dxfDeSegmentos(anillo(espigada)));
+  const jse = inventarioJuntas(le.piezas, t).porPieza[le.piezas[0]?.id] ?? [];
+  const esp = jse.find((j) => j.tipo === "espiga");
+  chk(!!esp, "alivios: la espiga achaflanada no se reconocio");
+  chk(
+    !!esp && Math.abs(esp.largo - 48) <= 1,
+    `alivios: la espiga achaflanada midio ${esp?.largo}, se esperaba 48 (la raiz, no los 40 de la punta)`
+  );
+  console.log(`alivios de fresa: ranura y espiga achaflanadas leidas igual que a escuadra`);
+}
+
+{
+  // ESPESOR DECLARADO EN LA CAPA y LAYOUTS REPETIDOS. Un CAM nombra la
+  // capa con la operacion y su profundidad, y dibuja la hoja mas de una
+  // vez para que el operador elija la cara. Las dos cosas juntas daban
+  // 14 piezas de 4 mm donde hay 7 de 12.
+  //
+  // El surtido va con formas distintas a proposito, y una repetida: es
+  // la trampa del caso real. Cuatro piezas iguales tambien votan un
+  // desplazamiento comun y no por eso son un layout copiado.
+  const hoja = [
+    ...rect(0, 0, 300, 200),
+    ...rect(0, 300, 400, 200),
+    ...rect(0, 600, 300, 200),
+    ...rect(0, 900, 250, 150),
+  ];
+  const copia = hoja.map(
+    ([a, b, c, d]) => [a + 2000, b, c + 2000, d] as [number, number, number, number]
+  );
+  const conCapa = dxfDeSegmentos([...hoja, ...copia]).replace(
+    /\n8\n0\n/g,
+    "\n8\nTOP-CUT-OUTSIDE_15.000MM\n"
+  );
+  const l = leerCorteDxf(conCapa);
+  chk(l.espesor === 15, `capas: el espesor deberia salir de la capa (15), salio ${l.espesor}`);
+  chk(l.piezas.length === 4, `capas: se esperaban 4 piezas tras quitar el layout repetido, hay ${l.piezas.length}`);
+
+  // Sin layout repetido no se descarta nada, aunque haya piezas iguales.
+  const solas = leerCorteDxf(dxfDeSegmentos(hoja));
+  chk(solas.piezas.length === 4, `capas: sin copias no deberia descartar nada, quedaron ${solas.piezas.length} de 4`);
+  const cuatroIguales = leerCorteDxf(
+    dxfDeSegmentos([...rect(0, 0, 300, 200), ...rect(0, 300, 300, 200), ...rect(0, 600, 300, 200), ...rect(0, 900, 300, 200)])
+  );
+  chk(
+    cuatroIguales.piezas.length === 4,
+    `capas: cuatro piezas iguales no son un layout copiado, quedaron ${cuatroIguales.piezas.length} de 4`
+  );
+  console.log(`capa y layout: espesor ${l.espesor} mm de la capa, ${l.piezas.length} piezas de las 8 dibujadas`);
+}
+
+{
+  // VARIAS HOJAS. Un mueble repartido en dos archivos se lee como un
+  // solo despiece, y una sola hoja tiene que dar exactamente lo mismo
+  // que antes de que existiera la lectura multiple.
+  const cuadro = (x: number, y: number): [number, number, number, number][] => [
+    [x, y, x + 300, y], [x + 300, y, x + 300, y + 200],
+    [x + 300, y + 200, x, y + 200], [x, y + 200, x, y],
+  ];
+  const a = dxfDeSegmentos([...cuadro(0, 0), ...cuadro(0, 300)]);
+  const b = dxfDeSegmentos([...cuadro(0, 0), ...cuadro(0, 300), ...cuadro(0, 600)]);
+  const sola = leerCortesDxf([{ nombre: "a.dxf", contenido: a }]);
+  chk(
+    sola.piezas.length === leerCorteDxf(a).piezas.length &&
+      sola.piezas.every((p, i) => p.id === leerCorteDxf(a).piezas[i].id),
+    "hojas: una sola hoja deberia leerse igual que con el lector de siempre"
+  );
+  const juntas = leerCortesDxf([
+    { nombre: "a.dxf", contenido: a },
+    { nombre: "b.dxf", contenido: b },
+  ]);
+  chk(juntas.ok, "hojas: la lectura de dos hojas fallo");
+  chk(juntas.piezas.length === 5, `hojas: se esperaban 5 piezas, hay ${juntas.piezas.length}`);
+  chk(
+    new Set(juntas.piezas.map((p) => p.id)).size === juntas.piezas.length,
+    "hojas: los ids de pieza chocan entre hojas"
+  );
+  console.log(`varias hojas: ${juntas.piezas.length} piezas de 2 archivos, ids sin choque`);
 }
 
 {

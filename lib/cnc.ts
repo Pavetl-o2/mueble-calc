@@ -161,15 +161,41 @@ export function leerCorteDxf(contenido: string): LecturaCnc {
     });
   });
 
-  // ---- 4) Espesor a partir del ancho de las mortajas ----
-  const { espesor, ranuras, notas } = inferirEspesor(piezas);
+  // ---- 3b) Layouts repetidos ----
+  // Un CAM dibuja la MISMA hoja varias veces al lado -cara frontal,
+  // cara reversa, ambas caras- para que el operador elija el montaje.
+  // Leidas al pie de la letra son piezas de mas: la estanteria de
+  // Opendesk daba 14 piezas donde hay 7, y con cada junta duplicada no
+  // hay armado que cierre.
+  const { unicas, copias: layoutsRepetidos } = quitarLayoutsRepetidos(piezas);
+  const piezasUnicas = unicas;
+
+  // ---- 4) Espesor ----
+  // El nombre de la capa manda sobre la geometria cuando lo trae: un
+  // corte pasante atraviesa el tablero entero, asi que "CUT_12.000MM"
+  // ES el espesor, medido por quien genero el archivo.
+  const { espesor, ranuras, notas: notasEspesor } = inferirEspesor(piezasUnicas);
+  const porCapa = espesorDeCapas(entities);
+  // Si la capa desmiente a la geometria, todo lo que la geometria dedujo
+  // del ancho de las mortajas se cayo con ella: el angulo de entrada
+  // salia de comparar esos anchos contra un espesor que no era. En
+  // Opendesk daba "mortajas de 5.5 mm equivalentes a 43 grados" cuando
+  // el tablero es de 12 y las piezas van a plomo.
+  const geometriaDesmentida =
+    porCapa != null && espesor != null && Math.abs(espesor - porCapa.mm) > 0.6;
+  const notas = geometriaDesmentida ? [] : notasEspesor;
+  if (layoutsRepetidos > 0) {
+    notas.push(
+      `El CAM dibuja la hoja mas de una vez -cara frontal, cara reversa, ambas caras- y las copias son la misma pieza. Se descartaron ${layoutsRepetidos}: quedan ${piezasUnicas.length} pieza(s) de las ${piezas.length} dibujadas.`
+    );
+  }
 
   if (sueltos > 0) {
     notas.push(
       `${sueltos} extremo(s) no cerraron contorno. Revisa que el dibujo no tenga lineas sueltas o duplicadas.`
     );
   }
-  if (!piezas.length) {
+  if (!piezasUnicas.length) {
     return {
       ...base,
       totalEntidades: entities.length,
@@ -178,16 +204,141 @@ export function leerCorteDxf(contenido: string): LecturaCnc {
     };
   }
 
+  let espesorFinal = espesor;
+  if (porCapa) {
+    if (geometriaDesmentida) {
+      notas.push(
+        `El ancho de las mortajas daba ${espesor} mm, pero la capa "${porCapa.capa}" declara un corte pasante de ${porCapa.mm} mm. Manda la capa: el corte pasante atraviesa el tablero entero.`
+      );
+    } else if (espesor == null) {
+      notas.push(`Espesor tomado de la capa "${porCapa.capa}": ${porCapa.mm} mm.`);
+    }
+    espesorFinal = porCapa.mm;
+  }
+
   return {
     ok: true,
-    piezas,
+    piezas: piezasUnicas,
     descartados,
-    espesor,
+    espesor: espesorFinal,
     ranuras,
     extremosSueltos: sueltos,
     totalEntidades: entities.length,
     notas,
   };
+}
+
+// ---------------------------------------------------------------
+// Layouts repetidos
+// ---------------------------------------------------------------
+
+/** Firma de una pieza, invariante a donde este puesta en la hoja. */
+function firma(p: ContornoCnc): string {
+  const h = p.huecos
+    .map((q) => Math.round(areaPoligono(q)))
+    .sort((a, b) => a - b)
+    .join(",");
+  return [
+    Math.round(p.largo * 10),
+    Math.round(p.ancho * 10),
+    Math.round(p.areaMm2),
+    Math.round(p.perimetroMm),
+    p.ext.length,
+    h,
+  ].join("/");
+}
+
+/**
+ * Descarta las copias de un layout repetido.
+ *
+ * No basta con tirar las piezas de firma igual: un mueble lleva cuatro
+ * patas iguales y las cuatro son reales. Lo que delata la copia es que
+ * TODO un grupo de piezas aparezca desplazado el mismo vector: eso no
+ * lo produce un despiece, lo produce el CAM dibujando la hoja dos
+ * veces. Por eso se exige que el desplazamiento sea comun a varias
+ * piezas antes de descartar ninguna.
+ */
+function quitarLayoutsRepetidos(piezas: ContornoCnc[]): {
+  unicas: ContornoCnc[];
+  copias: number;
+} {
+  if (piezas.length < 4) return { unicas: piezas, copias: 0 };
+
+  // Desplazamientos entre piezas de la misma firma, agrupados.
+  const votos = new Map<string, { dx: number; dy: number; pares: [number, number][] }>();
+  for (let i = 0; i < piezas.length; i++) {
+    for (let j = 0; j < piezas.length; j++) {
+      if (i === j || firma(piezas[i]) !== firma(piezas[j])) continue;
+      const dx = piezas[j].bbox.x0 - piezas[i].bbox.x0;
+      const dy = piezas[j].bbox.y0 - piezas[i].bbox.y0;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+      const k = `${Math.round(dx * 2)},${Math.round(dy * 2)}`;
+      if (!votos.has(k)) votos.set(k, { dx, dy, pares: [] });
+      votos.get(k)!.pares.push([i, j]);
+    }
+  }
+
+  // Un layout repetido mueve al menos un tercio de las piezas del mismo
+  // modo. Menos que eso es coincidencia de piezas iguales.
+  const minimo = Math.max(3, Math.ceil(piezas.length / 3));
+  // Y sobre todo mueve piezas DISTINTAS. Cuatro patas iguales tambien
+  // votan un desplazamiento comun -cada una contra la siguiente- pero
+  // todas son la misma forma; un layout copiado arrastra el surtido
+  // entero. Por eso gana el que cubre mas formas, y con una sola forma
+  // no se descarta nada: entre borrar piezas buenas y dejar copias de
+  // mas, sobrar avisa y faltar no.
+  const formasDe = (v: { pares: [number, number][] }) =>
+    new Set(v.pares.map(([i]) => firma(piezas[i]))).size;
+  const mejor = [...votos.values()]
+    .filter((v) => v.pares.length >= minimo && formasDe(v) >= 2)
+    .sort((a, b) => formasDe(b) - formasDe(a) || b.pares.length - a.pares.length)[0];
+  if (!mejor) return { unicas: piezas, copias: 0 };
+
+  // Se conserva el original de cada par y se tira el desplazado.
+  const fuera = new Set<number>();
+  for (const [, j] of mejor.pares) fuera.add(j);
+  // Si el desplazamiento fuera simetrico caerian las dos copias: se
+  // conserva la del lado de donde arranca el vector.
+  for (const [i] of mejor.pares) fuera.delete(i);
+  const unicas = piezas.filter((_, k) => !fuera.has(k));
+  if (unicas.length === piezas.length || !unicas.length) {
+    return { unicas: piezas, copias: 0 };
+  }
+  return { unicas, copias: piezas.length - unicas.length };
+}
+
+// ---------------------------------------------------------------
+// Espesor declarado en las capas
+// ---------------------------------------------------------------
+
+/**
+ * Espesor leido del nombre de las capas del DXF.
+ *
+ * Los CAM serios codifican la operacion y su profundidad en el nombre
+ * de la capa: "TOP-CUT-OUTSIDE_12.000MM" es un corte pasante de 12 mm,
+ * "TOP-POCKET-INSIDE_9.000MM" un cajeado de 9. El corte pasante
+ * atraviesa el tablero, asi que su profundidad ES el espesor, dicho
+ * por quien genero el archivo. Es exacto y sale gratis: no hay que
+ * adivinarlo del ancho de una mortaja que puede venir achaflanada.
+ */
+function espesorDeCapas(entities: Ent[]): { mm: number; capa: string } | null {
+  const vistos = new Map<string, number>();
+  for (const e of entities) {
+    const capa = typeof e.layer === "string" ? e.layer : "";
+    if (!capa) continue;
+    const m = capa.match(/(\d+(?:\.\d+)?)\s*MM\b/i);
+    if (!m) continue;
+    const mm = Number(m[1]);
+    if (!Number.isFinite(mm) || mm < 3 || mm > 80) continue;
+    vistos.set(capa, mm);
+  }
+  if (!vistos.size) return null;
+
+  // Un cajeado no atraviesa: solo el corte pasante mide el tablero.
+  const pasantes = [...vistos].filter(([c]) => /\bCUT\b|CUT[-_]/i.test(c));
+  const lista = pasantes.length ? pasantes : [...vistos];
+  const mejor = lista.sort((a, b) => b[1] - a[1])[0];
+  return { mm: mejor[1], capa: mejor[0] };
 }
 
 // ---------------------------------------------------------------
@@ -508,4 +659,101 @@ function aristasRectas(l: Pt[]): number[] {
     if (d > 1.5) out.push(d);
   }
   return out;
+}
+
+// ---------------------------------------------------------------
+// Varias hojas
+// ---------------------------------------------------------------
+
+/**
+ * Lee un juego de hojas como si fueran un solo despiece.
+ *
+ * Un CAM no exporta el mueble entero en un archivo: lo reparte en hojas
+ * de material, y a veces una hoja por espesor. La estanteria Linnea de
+ * Opendesk viene en varias y la que se abre sola trae 5 entrepanos y 2
+ * montantes; los tableros verticales que cruzan por las ranuras de 180
+ * mm estan en otra. Con media caja de piezas no hay armador que cierre
+ * el mueble, y el que lo intente va a inventarse el resto: es
+ * exactamente lo que pasaba, una rejilla de entrepanos cruzados entre
+ * si porque sus ranuras encajaban unas con otras.
+ *
+ * Los ids se prefijan por hoja para que no choquen. Las coordenadas no
+ * hace falta tocarlas: cada pieza se arma por sus juntas, no por donde
+ * cayo en la hoja.
+ */
+export function leerCortesDxf(hojas: { nombre: string; contenido: string }[]): LecturaCnc {
+  if (hojas.length === 1) return leerCorteDxf(hojas[0].contenido);
+  if (!hojas.length) {
+    return {
+      ok: false, piezas: [], descartados: 0, ranuras: [], extremosSueltos: 0,
+      totalEntidades: 0, notas: [], error: "No se recibio ningun archivo.",
+    };
+  }
+
+  const piezas: ContornoCnc[] = [];
+  const notas: string[] = [];
+  const espesores: { mm: number; deCapa: boolean }[] = [];
+  const ranuras = new Map<number, number>();
+  let descartados = 0;
+  let sueltos = 0;
+  let entidades = 0;
+  let leidas = 0;
+
+  hojas.forEach((h, i) => {
+    const l = leerCorteDxf(h.contenido);
+    entidades += l.totalEntidades;
+    if (!l.ok) {
+      notas.push(`${h.nombre}: no se pudo leer (${l.error ?? "sin detalle"}).`);
+      return;
+    }
+    leidas++;
+    descartados += l.descartados;
+    sueltos += l.extremosSueltos;
+    const tag = `h${i + 1}`;
+    for (const p of l.piezas) piezas.push({ ...p, id: `${tag}${p.id}` });
+    for (const r of l.ranuras) ranuras.set(r.ancho, (ranuras.get(r.ancho) ?? 0) + r.veces);
+    if (l.espesor != null) {
+      espesores.push({ mm: l.espesor, deCapa: l.notas.some((t) => t.includes("capa")) });
+    }
+    for (const n of l.notas) notas.push(`${h.nombre}: ${n}`);
+  });
+
+  if (!piezas.length) {
+    return {
+      ok: false, piezas: [], descartados, ranuras: [], extremosSueltos: sueltos,
+      totalEntidades: entidades, notas, error: "Ninguno de los archivos traia piezas de corte.",
+    };
+  }
+
+  // El espesor declarado en una capa vale mas que el inferido de una
+  // mortaja, venga de la hoja que venga.
+  const declarados = espesores.filter((e) => e.deCapa).map((e) => e.mm);
+  const todos = espesores.map((e) => e.mm);
+  const lista = declarados.length ? declarados : todos;
+  const conteo = new Map<number, number>();
+  for (const mm of lista) conteo.set(mm, (conteo.get(mm) ?? 0) + 1);
+  const espesor = [...conteo].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0];
+
+  const distintos = [...new Set(todos.map((x) => Math.round(x * 10) / 10))];
+  if (distintos.length > 1) {
+    notas.push(
+      `Las hojas no son del mismo espesor (${distintos.join(", ")} mm). El armado usa ${espesor} mm para todas; si el mueble mezcla tableros, revisa pieza por pieza.`
+    );
+  }
+  notas.unshift(
+    `${leidas} hoja(s) leidas como un solo despiece: ${piezas.length} pieza(s) en total.`
+  );
+
+  return {
+    ok: true,
+    piezas,
+    descartados,
+    espesor,
+    ranuras: [...ranuras]
+      .map(([ancho, veces]) => ({ ancho, veces }))
+      .sort((a, b) => b.veces - a.veces),
+    extremosSueltos: sueltos,
+    totalEntidades: entidades,
+    notas,
+  };
 }
