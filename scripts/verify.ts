@@ -7,6 +7,8 @@ import { leerDxf, proponerEnvolvente } from "../lib/dxf";
 import { leerCorteDxf, tramosEn } from "../lib/cnc";
 import { aplicarAjuste, despieceCnc, opcionesSugeridas, orientarPieza, panelDe, proponerArmado } from "../lib/cncArmado";
 import { detectarEnsambles } from "../lib/cncEnsambles";
+import { inventarioJuntas } from "../lib/cncJuntas";
+import { alMundo, resolverArmado } from "../lib/cncSolver";
 import { extraerJson, imagenDemasiadoGrande, IMAGEN_MAX_BYTES, proveedorActivo } from "../lib/llm";
 import { readFileSync, existsSync } from "fs";
 
@@ -457,6 +459,133 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
   // No debe tocar lo que no se pidio.
   chk(con.piezaId === base.piezaId && con.acostada === base.acostada, "ajuste: modifico campos ajenos");
   console.log("ajuste manual: deltas aplicados correctamente");
+}
+
+{
+  // MOTOR DE ENSAMBLES. Una caja de cuatro piezas armada solo con
+  // juntas: un fondo con cuatro ranuras pasantes y dos costados con dos
+  // espigas cada uno. El solver tiene que colocarlas sin ningun
+  // parametro -ni alto, ni radio, ni inclinacion- y sin imagen.
+  const t = 18;
+  const espigaEn = (x0: number, y0: number, w: number, h: number): [number, number, number, number][] => {
+    // Placa w x h con dos espigas de 60 x 18 saliendo del canto de abajo.
+    const p: [number, number][] = [
+      [x0, y0 + h], [x0, y0],
+      [x0 + 80, y0], [x0 + 80, y0 - t], [x0 + 140, y0 - t], [x0 + 140, y0],
+      [x0 + w - 140, y0], [x0 + w - 140, y0 - t], [x0 + w - 80, y0 - t], [x0 + w - 80, y0],
+      [x0 + w, y0], [x0 + w, y0 + h],
+    ];
+    return p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+  };
+  const ranura = (cx: number, cy: number): [number, number, number, number][] =>
+    rect(cx - 30, cy - t / 2, 60, t);
+
+  const segs = [
+    ...rect(0, 0, 900, 600), // fondo
+    ...ranura(80 + 30, 150), ...ranura(900 - 80 - 30, 150),
+    ...ranura(80 + 30, 450), ...ranura(900 - 80 - 30, 450),
+    ...espigaEn(1200, 100, 900, 400), // costado 1
+  ];
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  chk(l.piezas.length === 2, `e4: se esperaban 2 piezas, hay ${l.piezas.length}`);
+
+  const inv = inventarioJuntas(l.piezas, t);
+  const juntas = Object.values(inv.porPieza).flat();
+  const espigas = juntas.filter((j) => j.tipo === "espiga");
+  const ranuras = juntas.filter((j) => j.tipo === "ranura");
+  chk(espigas.length === 2, `e4: se esperaban 2 espigas, hay ${espigas.length}`);
+  chk(ranuras.length === 4, `e4: se esperaban 4 ranuras, hay ${ranuras.length}`);
+  chk(
+    espigas.every((j) => Math.abs(j.largo - 60) <= 2),
+    `e4: largo de espiga incorrecto (${espigas.map((j) => j.largo).join(",")})`
+  );
+
+  // Cuatro ranuras y dos espigas por costado: el mueble lleva DOS
+  // costados aunque el DXF dibuje uno.
+  const arm = resolverArmado(l.piezas, t);
+  const costados = arm.instancias.filter((i) => i.piezaId !== arm.instancias[0].piezaId);
+  chk(arm.instancias.length === 3, `e4: se esperaban 3 instancias, hay ${arm.instancias.length}`);
+  chk(costados.length === 2, `e4: el balance de juntas deberia pedir 2 costados, pide ${costados.length}`);
+  chk(arm.uniones.length === 4, `e4: se esperaban 4 uniones, hay ${arm.uniones.length}`);
+  chk(!arm.sueltas.length, `e4: quedaron piezas sueltas (${arm.sueltas.join(",")})`);
+
+  // Los costados quedan de pie y en planos distintos: si el solver
+  // hubiera puesto los dos en el mismo sitio, encajarian igual de bien
+  // pero el mueble seria imposible.
+  const alturas = costados.map((i) =>
+    Math.min(...l.piezas.find((p) => p.id === i.piezaId)!.ext.map((q) => alMundo(i.pose, q)[1]))
+  );
+  chk(alturas.every((y) => y < -100), `e4: los costados no bajan del fondo (${alturas.join(",")})`);
+  const sep = Math.hypot(
+    costados[0].pose.o[0] - costados[1].pose.o[0],
+    costados[0].pose.o[1] - costados[1].pose.o[1],
+    costados[0].pose.o[2] - costados[1].pose.o[2]
+  );
+  chk(sep > 100, `e4: los dos costados quedaron en el mismo sitio (${Math.round(sep)} mm)`);
+  console.log(
+    `e4: ${arm.instancias.length} piezas colocadas por ${arm.uniones.length} juntas, sin parametros ni imagen`
+  );
+}
+
+{
+  // MEDIA MADERA. Dos tableros de 600x200 que se cruzan a escuadra, cada
+  // uno con una caja del ancho del tablero y de medio alto. No hay
+  // espigas: si el solver los arma, es solo por el cruce.
+  const t = 18;
+  const anillo = (p: [number, number][]): [number, number, number, number][] =>
+    p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+  const segs = [
+    // Caja abierta hacia abajo.
+    ...anillo([[0, 0], [291, 0], [291, 100], [309, 100], [309, 0], [600, 0], [600, 200], [0, 200]]),
+    // Caja abierta hacia arriba.
+    ...anillo([
+      [800, 0], [1400, 0], [1400, 200], [1109, 200], [1109, 100], [1091, 100], [1091, 200], [800, 200],
+    ]),
+  ];
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  chk(l.piezas.length === 2, `media: se esperaban 2 piezas, hay ${l.piezas.length}`);
+
+  const cajas = Object.values(inventarioJuntas(l.piezas, t).porPieza)
+    .flat()
+    .filter((j) => j.tipo === "caja");
+  chk(cajas.length === 2, `media: se esperaban 2 cajas, hay ${cajas.length}`);
+  chk(
+    cajas.every((j) => Math.abs(j.largo - t) <= 2 && Math.abs(j.fondo - 100) <= 3),
+    `media: medidas de caja incorrectas (${cajas.map((j) => `${j.largo}x${j.fondo}`).join(", ")})`
+  );
+
+  const arm = resolverArmado(l.piezas, t);
+  chk(arm.instancias.length === 2, `media: se esperaban 2 instancias, hay ${arm.instancias.length}`);
+  chk(arm.uniones.length === 1, `media: se esperaba 1 cruce, hay ${arm.uniones.length}`);
+  if (arm.instancias.length === 2) {
+    // Al cruzarse, las caras quedan perpendiculares.
+    const [a, b] = arm.instancias;
+    const cos = Math.abs(a.pose.w[0] * b.pose.w[0] + a.pose.w[1] * b.pose.w[1] + a.pose.w[2] * b.pose.w[2]);
+    const na = Math.hypot(...a.pose.w) * Math.hypot(...b.pose.w) || 1;
+    chk(cos / na < 0.2, `media: los tableros no quedaron a escuadra (cos ${(cos / na).toFixed(2)})`);
+  }
+  console.log(`media madera: ${arm.instancias.length} tableros cruzados por ${arm.uniones.length} caja(s)`);
+}
+
+{
+  // Un dibujo SIN juntas no debe inventar un armado: se reporta que no
+  // hay con que, y el visor cae a la propuesta por parametros.
+  const segs = [...rect(0, 0, 800, 500), ...rect(1000, 0, 400, 300)];
+  const l = leerCorteDxf(dxfDeSegmentos(segs));
+  const arm = resolverArmado(l.piezas, 18);
+  chk(!arm.uniones.length, `e4: no deberia resolver uniones sin juntas (${arm.uniones.length})`);
+  chk(arm.sueltas.length === 1, `e4: la pieza sin junta deberia quedar suelta (${arm.sueltas.length})`);
+  chk(
+    arm.notas.some((n) => /ninguna junta/i.test(n)),
+    `e4: falta el aviso de que no hay juntas (${arm.notas.join(" | ")})`
+  );
+  console.log("e4: un dibujo sin juntas no inventa armado, lo reporta");
 }
 
 {

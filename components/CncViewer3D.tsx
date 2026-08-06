@@ -6,6 +6,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import type { ContornoCnc } from "@/lib/cnc";
 import type { Colocacion } from "@/lib/cncArmado";
+import { alMundo, type Armadura, type Pose } from "@/lib/cncSolver";
 
 // ---------------------------------------------------------------
 // Visor de piezas de corte.
@@ -210,10 +211,59 @@ function PiezaColocada({
   );
 }
 
+/**
+ * Pieza colocada por el solver de juntas.
+ *
+ * Aqui no hay radio ni giro que componer: la pose ya es una base
+ * completa, asi que se pasa como matriz y three no tiene que
+ * interpretar nada. Y como el solver trabaja con Y hacia arriba -que es
+ * el convenio de three, no el de CAD-, estas piezas van FUERA del giro
+ * global que endereza la hoja de corte.
+ */
+function PiezaResuelta({
+  contorno,
+  espesor,
+  pose,
+  seleccionada,
+  onSelect,
+}: {
+  contorno: ContornoCnc;
+  espesor: number;
+  pose: Pose;
+  seleccionada: boolean;
+  onSelect: (id: string | null) => void;
+}) {
+  const m = useMemo(() => {
+    const u = new THREE.Vector3(...pose.u);
+    const v = new THREE.Vector3(...pose.v);
+    const w = new THREE.Vector3(...pose.w).normalize();
+    // La geometria viene centrada en la caja de la pieza, asi que el
+    // origen del grupo es la imagen de ese centro y no la del (0,0).
+    const cx = (contorno.bbox.x0 + contorno.bbox.x1) / 2;
+    const cy = (contorno.bbox.y0 + contorno.bbox.y1) / 2;
+    const pos = new THREE.Vector3(...pose.o)
+      .addScaledVector(u, cx)
+      .addScaledVector(v, cy);
+    return new THREE.Matrix4().makeBasis(u, v, w).setPosition(pos);
+  }, [pose, contorno]);
+
+  return (
+    <group matrixAutoUpdate={false} matrix={m}>
+      <Malla
+        contorno={contorno}
+        espesor={espesor}
+        seleccionada={seleccionada}
+        onSelect={onSelect}
+      />
+    </group>
+  );
+}
+
 export default function CncViewer3D({
   piezas,
   espesor,
   colocaciones,
+  armadura,
   alturaPiso,
   selected,
   onSelect,
@@ -222,12 +272,14 @@ export default function CncViewer3D({
   espesor: number;
   /** Sin colocaciones se muestran acostadas como en la hoja de corte. */
   colocaciones?: Colocacion[];
+  /** Armado resuelto por juntas. Si viene, manda sobre `colocaciones`. */
+  armadura?: Armadura | null;
   /** Cota donde apoya el mueble. El piso se dibuja ahi. */
   alturaPiso?: number;
   selected: string | null;
   onSelect: (id: string | null) => void;
 }) {
-  const armado = !!colocaciones?.length;
+  const armado = !!colocaciones?.length || !!armadura?.instancias.length;
 
   const porId = useMemo(() => {
     const m = new Map<string, Colocacion>();
@@ -242,6 +294,36 @@ export default function CncViewer3D({
     const ys = piezas.flatMap((p) => [p.bbox.y0, p.bbox.y1]);
     const cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
     const cy = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+
+    // Con el armado resuelto la escena se mide de verdad, recorriendo
+    // los contornos ya colocados, en vez de deducirla de un radio y un
+    // alto que aqui ya no existen.
+    if (armadura?.instancias.length) {
+      const mapa = new Map(piezas.map((p) => [p.id, p]));
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const inst of armadura.instancias) {
+        const c = mapa.get(inst.piezaId);
+        if (!c) continue;
+        for (let k = 0; k < c.ext.length; k += 3) {
+          const w = alMundo(inst.pose, c.ext[k]);
+          x0 = Math.min(x0, w[0]); x1 = Math.max(x1, w[0]);
+          y0 = Math.min(y0, w[1]); y1 = Math.max(y1, w[1]);
+          z0 = Math.min(z0, w[2]); z1 = Math.max(z1, w[2]);
+        }
+      }
+      if (Number.isFinite(x0)) {
+        const w = x1 - x0;
+        const h = y1 - y0;
+        const d = z1 - z0;
+        return {
+          cx: 0,
+          cy: 0,
+          alturaOjo: (y0 + y1) / 2,
+          extension: Math.max(w, h, d, 200),
+          piso: Math.max(w, d, 500),
+        };
+      }
+    }
 
     if (!armado) {
       const w = xs.length ? Math.max(...xs) - Math.min(...xs) : 1000;
@@ -262,7 +344,7 @@ export default function CncViewer3D({
       // mueve bajo el mueble. Se fija al tamano de las piezas, que no cambia.
       piso: Math.max(ancho, 500),
     };
-  }, [piezas, colocaciones, armado, alturaPiso]);
+  }, [piezas, colocaciones, armado, armadura, alturaPiso]);
 
   const dist = Math.max(400, vista.extension * 1.9);
 
@@ -311,43 +393,85 @@ export default function CncViewer3D({
         <directionalLight position={[dist, dist * 1.6, dist * 0.8]} intensity={1.5} />
         <directionalLight position={[-dist, dist * 0.6, -dist]} intensity={0.5} />
 
+        {/* Armado por juntas: la pose ya viene con Y arriba, asi que no
+            pasa por el giro de CAD. */}
+        {armadura?.instancias.map((inst) => {
+          const c = piezas.find((p) => p.id === inst.piezaId);
+          if (!c) return null;
+          return (
+            <PiezaResuelta
+              key={inst.id}
+              contorno={c}
+              espesor={espesor}
+              pose={inst.pose}
+              seleccionada={selected === inst.piezaId}
+              onSelect={onSelect}
+            />
+          );
+        })}
+
+        {/* Las que no cerraron con nada se dejan tendidas en el piso, al
+            lado del mueble. Se ven, se pueden picar y se distinguen de un
+            golpe de vista de las que si se resolvieron: mejor eso que
+            colocarlas donde no consta que vayan. */}
+        {armadura?.sueltas.map((id, k) => {
+          const c = piezas.find((p) => p.id === id);
+          if (!c) return null;
+          return (
+            <group
+              key={`suelta-${id}`}
+              position={[vista.extension * (0.75 + k * 0.55), alturaPiso ?? 0, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <Malla
+                contorno={c}
+                espesor={espesor}
+                seleccionada={selected === id}
+                onSelect={onSelect}
+              />
+            </group>
+          );
+        })}
+
         {/* CAD usa Z arriba y three.js usa Y arriba. Este giro convierte el
             mundo entero de una vez, para que las colocaciones se puedan
             escribir en coordenadas CAD sin traducir cada rotacion. */}
         <group rotation={[-Math.PI / 2, 0, 0]}>
-          {piezas.map((p) => {
-            const col = porId.get(p.id);
-            if (col) {
-              return (
-                <PiezaColocada
-                  key={p.id}
-                  contorno={p}
-                  espesor={espesor}
-                  colocacion={col}
-                  seleccionada={selected === p.id}
-                  onSelect={onSelect}
-                />
-              );
-            }
-            // Sin armado cada pieza se queda donde venia en la hoja de corte.
-            return (
-              <group
-                key={p.id}
-                position={[
-                  (p.bbox.x0 + p.bbox.x1) / 2 - vista.cx,
-                  (p.bbox.y0 + p.bbox.y1) / 2 - vista.cy,
-                  0,
-                ]}
-              >
-                <Malla
-                  contorno={p}
-                  espesor={espesor}
-                  seleccionada={selected === p.id}
-                  onSelect={onSelect}
-                />
-              </group>
-            );
-          })}
+          {armadura?.instancias.length
+            ? null
+            : piezas.map((p) => {
+                const col = porId.get(p.id);
+                if (col) {
+                  return (
+                    <PiezaColocada
+                      key={p.id}
+                      contorno={p}
+                      espesor={espesor}
+                      colocacion={col}
+                      seleccionada={selected === p.id}
+                      onSelect={onSelect}
+                    />
+                  );
+                }
+                // Sin armado cada pieza se queda donde venia en la hoja.
+                return (
+                  <group
+                    key={p.id}
+                    position={[
+                      (p.bbox.x0 + p.bbox.x1) / 2 - vista.cx,
+                      (p.bbox.y0 + p.bbox.y1) / 2 - vista.cy,
+                      0,
+                    ]}
+                  >
+                    <Malla
+                      contorno={p}
+                      espesor={espesor}
+                      seleccionada={selected === p.id}
+                      onSelect={onSelect}
+                    />
+                  </group>
+                );
+              })}
         </group>
 
         {/* El piso va donde apoya el mueble, no a una altura fija: al mover

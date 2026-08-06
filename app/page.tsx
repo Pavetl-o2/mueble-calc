@@ -9,6 +9,7 @@ import CostPanel from "@/components/CostPanel";
 import CatalogEditor from "@/components/CatalogEditor";
 import CncPanel, { type EstadoCnc } from "@/components/CncPanel";
 import { aplicarAjuste, despieceCnc, proponerArmado } from "@/lib/cncArmado";
+import { pisoDe, resolverArmado } from "@/lib/cncSolver";
 import { defaultCatalog } from "@/lib/catalog";
 import { costModel, cutList, money } from "@/lib/costing";
 import { costCsv, cutListCsv, download, manifestJson, partsDxf } from "@/lib/exporters";
@@ -72,13 +73,26 @@ export default function Page() {
     () => (cnc ? despieceCnc(cnc.lectura, cnc.asig, catalog) : buildFurniture(spec)),
     [cnc, spec, catalog]
   );
-  const armado = useMemo(() => {
+  // Primero se intenta resolver el mueble por sus juntas. Si el dibujo
+  // trae con que -espigas, cajas, ranuras que emparejen-, el armado sale
+  // de la geometria y no hay nada que adivinar. Solo cuando el archivo no
+  // declara ninguna junta se cae a la propuesta por parametros.
+  const armadura = useMemo(() => {
     if (!cnc?.armar) return null;
+    const a = resolverArmado(cnc.lectura.piezas, cnc.asig.espesor);
+    return a.uniones.length ? a : null;
+  }, [cnc]);
+  const armado = useMemo(() => {
+    if (!cnc?.armar || armadura) return null;
     const a = proponerArmado(cnc.lectura, cnc.opciones);
     // Las correcciones del usuario se aplican encima de la propuesta, no
     // la reemplazan: si cambia el armado, los ajustes siguen valiendo.
     return { ...a, colocaciones: a.colocaciones.map((c) => aplicarAjuste(c, cnc.ajustes[c.piezaId])) };
-  }, [cnc]);
+  }, [cnc, armadura]);
+  const pisoArmadura = useMemo(
+    () => (armadura && cnc ? pisoDe(armadura, cnc.lectura.piezas, cnc.asig.espesor) : undefined),
+    [armadura, cnc]
+  );
   const rows = useMemo(() => cutList(model, modulos), [model, modulos]);
   const cost = useMemo(() => costModel(model, catalog, modulos), [model, catalog, modulos]);
   const selPart = model.parts.find((p) => p.id === selected);
@@ -230,7 +244,8 @@ export default function Page() {
                   piezas={cnc.lectura.piezas}
                   espesor={cnc.asig.espesor}
                   colocaciones={armado?.colocaciones}
-                  alturaPiso={armado?.alturaPiso}
+                  armadura={armadura}
+                  alturaPiso={pisoArmadura ?? armado?.alturaPiso}
                   selected={selected}
                   onSelect={setSelected}
                 />
@@ -266,10 +281,13 @@ export default function Page() {
               {cnc ? (
                 <>
                   <span className="lbl shrink-0">
-                    {armado ? "Armado propuesto" : "Piezas planas"}
+                    {armadura ? "Armado resuelto" : armado ? "Armado propuesto" : "Piezas planas"}
                   </span>
                   <span className="text-[11px] text-muted flex-1 min-w-0 truncate">
-                    {armado
+                    {armadura
+                      ? `${armadura.instancias.length} pieza(s) colocadas por ${armadura.uniones.length} junta(s)` +
+                        (armadura.sueltas.length ? ` · ${armadura.sueltas.length} suelta(s)` : "")
+                      : armado
                       ? `${armado.familia} · confianza ${armado.confianza} · hipotesis, no fabricacion`
                       : "Piezas como vienen en la hoja de corte"}
                   </span>

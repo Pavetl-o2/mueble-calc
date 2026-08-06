@@ -10,7 +10,7 @@ import {
   type OpcionesArmado,
   type Rol,
 } from "@/lib/cncArmado";
-import { detectarEnsambles } from "@/lib/cncEnsambles";
+import { resolverArmado } from "@/lib/cncSolver";
 import { postJson, prepararImagen, type ImagenLista } from "@/lib/imagen";
 import type { Catalog } from "@/lib/types";
 
@@ -149,6 +149,19 @@ export default function CncPanel({
     }
   }
 
+  // Lo que el motor de juntas saca del dibujo. Se calcula siempre, aunque
+  // el armado este apagado, porque es informacion del archivo: dice si el
+  // mueble se puede resolver solo y cuantas copias pide de cada pieza.
+  const armadura = useMemo(
+    () => (estado ? resolverArmado(estado.lectura.piezas, estado.asig.espesor) : null),
+    [estado?.lectura.piezas, estado?.asig.espesor]
+  );
+  const copias = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const i of armadura?.instancias ?? []) m.set(i.piezaId, (m.get(i.piezaId) ?? 0) + 1);
+    return m;
+  }, [armadura]);
+
   const resumen = useMemo(() => {
     if (!estado) return null;
     const ps = estado.lectura.piezas;
@@ -204,7 +217,6 @@ export default function CncPanel({
 
   const l = estado.lectura;
   const panel = panelDe(l);
-  const ensambles = detectarEnsambles(l.piezas, panel, estado.asig.espesor);
   const piezaSel = l.piezas.find((p) => p.id === selected);
   const esPanelSel = piezaSel != null && piezaSel === panel;
   const ajusteSel: AjustePieza = (selected && estado.ajustes[selected]) || {};
@@ -431,56 +443,54 @@ export default function CncPanel({
         </p>
       </section>
 
-      {/* ---- Ensambles detectados ---- */}
+      {/* ---- Juntas del dibujo ---- */}
       <section>
-        <h3 className="text-[15px] font-medium mb-2">Ensambles detectados</h3>
+        <h3 className="text-[15px] font-medium mb-2">Juntas del dibujo</h3>
         <div className="card overflow-x-auto">
           <table className="w-full text-[13px] min-w-[380px]">
             <thead>
               <tr className="bg-[#F3F5F1] border-b border-rule text-left">
-                <th className="lbl px-3 py-2 font-medium">Espiga</th>
-                <th className="lbl px-2 py-2 font-medium">Mortaja</th>
-                <th className="lbl px-2 py-2 text-right font-medium">Holgura</th>
-                <th className="lbl px-3 py-2 text-right font-medium">Entra a</th>
+                <th className="lbl px-3 py-2 font-medium">Pieza</th>
+                <th className="lbl px-2 py-2 font-medium">Juntas</th>
+                <th className="lbl px-2 py-2 text-right font-medium">Copias</th>
+                <th className="lbl px-3 py-2 text-right font-medium">Estado</th>
               </tr>
             </thead>
             <tbody>
-              {ensambles.ensambles.map((e, i) => {
-                const lg = ensambles.lenguetas[e.piezaId]?.[e.lengueta];
+              {l.piezas.map((p) => {
+                const js = armadura?.juntasPorPieza[p.id] ?? [];
+                const n = copias.get(p.id) ?? 0;
                 return (
                   <tr
-                    key={i}
-                    onClick={() => onSelect(e.piezaId)}
+                    key={p.id}
+                    onClick={() => onSelect(p.id)}
                     className={`border-b border-rule/60 last:border-0 cursor-pointer ${
-                      selected === e.piezaId ? "bg-pineLight" : ""
+                      selected === p.id ? "bg-pineLight" : ""
                     }`}
                   >
-                    <td className="px-3 py-1.5">
-                      {e.piezaId}
-                      {lg && <span className="num text-[11px] text-muted ml-1.5">{lg.ancho} mm</span>}
+                    <td className="px-3 py-1.5">{p === panel ? "Panel" : p.id}</td>
+                    <td className="num px-2 py-1.5 text-[12px] text-muted">
+                      {js.length
+                        ? [...new Set(js.map((j) => `${j.tipo} ${Math.round(j.largo)}`))]
+                            .slice(0, 3)
+                            .join(", ")
+                        : "—"}
                     </td>
-                    <td className="num px-2 py-1.5 text-[12px] text-muted">#{e.mortaja}</td>
-                    <td className="num px-2 py-1.5 text-right">
-                      {e.holgura.toFixed(1)}
-                      <span className="text-[11px] text-muted ml-0.5">mm</span>
-                    </td>
-                    <td className="num px-3 py-1.5 text-right">
-                      {e.angulo ? `${e.angulo}°` : "escuadra"}
+                    <td className="num px-2 py-1.5 text-right">{n || "—"}</td>
+                    <td className="px-3 py-1.5 text-right text-[12px]">
+                      {n ? (
+                        <span className="text-pine">resuelta</span>
+                      ) : (
+                        <span className="text-bronze">suelta</span>
+                      )}
                     </td>
                   </tr>
                 );
               })}
-              {!ensambles.ensambles.length && (
-                <tr>
-                  <td colSpan={4} className="px-3 py-2 text-[12px] text-muted">
-                    No se emparejo ninguna espiga con las mortajas del panel.
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
-        {ensambles.notas.map((n, i) => (
+        {(armadura?.notas ?? []).map((n, i) => (
           <p key={i} className="text-[12px] text-muted mt-2">
             {n}
           </p>
