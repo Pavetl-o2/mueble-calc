@@ -50,3 +50,31 @@ cajas que encajan todas con todas.
 
 El multi-arranque es el caso k=1 del mismo codigo, asi que sirve de primer
 incremento sin tirar nada.
+
+### 3. Que mide el puntaje
+
+**Cobertura simple:** manda piezas colocadas, despues uniones cerradas, y
+despues validez fisica (nada interpenetrado, una sola pieza rigida). Si no
+alcanza, el siguiente ingrediente acordado es penalizar blandamente que dos
+piezas de la misma forma queden cruzadas entre si.
+
+Motivo: con el fileset completo la cobertura ya rechaza la rejilla, porque
+dejaria los montantes altos sin colocar. Todo lo demas se agrega solo cuando
+se demuestre que hace falta, no antes.
+
+**Descartado por medicion: el aprovechamiento de juntas.** Parecia el
+ingrediente que delataba la rejilla y no delata nada:
+
+    archivo   disponibles  usadas  aprovechamiento  correcto
+    mesa               20      12             60%   si
+    silla              14      12             86%   si
+    banco             116     116            100%   si
+    linnea (rejilla)   35      28             80%   NO
+
+La rejilla aprovecha mas juntas que el armado correcto de la mesa.
+
+**Limite que ningun puntaje levanta:** con una sola hoja de un juego, la
+rejilla es completa, rigida y bien aprovechada. No hay puntaje que la
+rechace. Lo que la delata es que falten los montantes, y eso solo aparece
+cargando las demas hojas. El puntaje elige bien cuando estan todas las
+piezas; no suple las que no estan.
