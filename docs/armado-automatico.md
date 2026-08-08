@@ -114,3 +114,23 @@ mitad de las juntas se mide contra el tablero equivocado.
 Descartado no fusionar hojas de distinto espesor: en un flat-pack real las
 piezas de 12 y las de 18 se ensamblan ENTRE SI, y separarlas garantiza que
 nunca cierre.
+
+### 6. Que se muestra cuando el candidato no es confiable
+
+**El mejor y sus alternativos.** Si el segundo o el tercero del beam puntuan
+casi igual, se muestran y elige la persona. Con el beam ya decidido sale
+gratis: los candidatos estan calculados, solo hay que no tirarlos.
+
+Motivo: el problema nunca fue equivocarse, fue equivocarse con cara de
+seguro. Hoy la app dibuja la rejilla con una etiqueta chica de "confianza
+baja". Ademas da una senal diagnostica que no existe: si los tres primeros
+candidatos son muy distintos entre si, el archivo es ambiguo; si son casi
+iguales, el armado es solido.
+
+Despues, y encima de esto: marcar en el visor las uniones flojas -las que
+salieron de medias maderas entre piezas iguales, sin espiga que las
+confirme-, que es de lo que esta hecha la rejilla.
+
+Descartado negarse cuando la confianza es baja: se niega de mas. En la hoja 2
+de Linnea, los entrepanos colgados de los montantes por espigas pasantes son
+correctos y utiles aunque falte el resto del juego.
