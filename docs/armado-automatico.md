@@ -134,3 +134,24 @@ confirme-, que es de lo que esta hecha la rejilla.
 Descartado negarse cuando la confianza es baja: se niega de mas. En la hoja 2
 de Linnea, los entrepanos colgados de los montantes por espigas pasantes son
 correctos y utiles aunque falte el resto del juego.
+
+### 7. Si entra la foto, y como
+
+**Solo aporta proporciones.** Alto, ancho y fondo aproximados del mueble, y se
+penaliza a los candidatos cuya envolvente no cuadre. Comparar tres numeros
+contra una envolvente es mucho menos trabajo que renderizar siluetas, y ya
+descarta la rejilla de Linnea (399x1204x1100 contra un mueble que la foto
+muestra alto y angosto).
+
+Mas adelante, el escalon siguiente: **ordenar los candidatos por parecido de
+silueta**, renderizando cada uno desde unos pocos angulos.
+
+Lo importante de las dos es que la foto solo REORDENA candidatos que la
+geometria ya valido. No puede inventar ninguno, asi que en el peor caso elige
+mal entre cosas armables; nunca puede producir la figura que salio en la
+captura.
+
+Descartado que la foto etiquete piezas -que es lo que hace hoy-: en la captura
+el modelo dijo que las piezas de 1100x380 eran montantes verticales y las de
+929x189 repisas horizontales. Invirtio las dos. Ese error, convertido en
+restriccion del solver, es peor que no tener foto.
