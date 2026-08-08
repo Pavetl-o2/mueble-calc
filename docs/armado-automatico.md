@@ -96,3 +96,21 @@ Descartada la auto-consistencia sin verdad (que el armado cierre sin huecos
 ni choques): la rejilla de Linnea la aprueba.
 
 Estado: **a la espera de las demas hojas del juego.**
+
+### 5. Espesor cuando las hojas no coinciden
+
+**Espesor por pieza, heredado de su hoja.** Cada pieza carga el espesor de
+donde salio, cada junta se mide con el suyo, y el emparejado compara con la
+tolerancia de cada lado. Un campo `espesor` en ContornoCnc y `pieza.espesor ??
+global` en los tres lugares que hoy reciben el numero suelto: juntasDe,
+inventarioJuntas y resolverArmado.
+
+Motivo: es requisito de la decision 4, no una mejora opcional. Opendesk
+exporta un archivo POR ESPESOR -el que tenemos se llama cad2_12.0000- asi que
+cargar el juego completo cae de lleno en el caso que hoy se resuelve mal:
+la fusion colapsa todo a un numero y avisa, y con dos espesores mezclados la
+mitad de las juntas se mide contra el tablero equivocado.
+
+Descartado no fusionar hojas de distinto espesor: en un flat-pack real las
+piezas de 12 y las de 18 se ensamblan ENTRE SI, y separarlas garantiza que
+nunca cierre.
