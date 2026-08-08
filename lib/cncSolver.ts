@@ -381,7 +381,9 @@ function penetracion(
     for (const otra of colocadas) {
       const d = resta3(p, otra.pose.o);
       const z = d[0] * otra.pose.w[0] + d[1] * otra.pose.w[1] + d[2] * otra.pose.w[2];
-      if (Math.abs(z) > espesor * 0.4) continue;
+      // El semiespesor es el de la pieza contra la que se mide, no un
+      // numero global: un tablero de 12 y uno de 18 no ocupan lo mismo.
+      if (Math.abs(z) > (otra.pieza.espesor ?? espesor) * 0.4) continue;
       const lx = d[0] * otra.pose.u[0] + d[1] * otra.pose.u[1] + d[2] * otra.pose.u[2];
       const ly = d[0] * otra.pose.v[0] + d[1] * otra.pose.v[1] + d[2] * otra.pose.v[2];
       if (!dentro(otra.pieza.ext, lx, ly)) continue;
@@ -887,9 +889,10 @@ export function pisoDe(a: Armadura, piezas: ContornoCnc[], espesor: number): num
   for (const inst of a.instancias) {
     const c = porId.get(inst.piezaId);
     if (!c) continue;
+    const medio = (c.espesor ?? espesor) / 2;
     for (const [x, y] of c.ext) {
       const p = alMundo(inst.pose, [x, y]);
-      min = Math.min(min, p[1] - Math.abs(inst.pose.w[1]) * (espesor / 2));
+      min = Math.min(min, p[1] - Math.abs(inst.pose.w[1]) * medio);
     }
   }
   return Number.isFinite(min) ? min : 0;

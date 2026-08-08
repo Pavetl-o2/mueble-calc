@@ -35,6 +35,15 @@ export interface ContornoCnc {
   /** Lado mayor y menor de la caja envolvente, en mm. */
   largo: number;
   ancho: number;
+  /**
+   * Espesor del tablero de ESTA pieza, en mm.
+   *
+   * Va por pieza y no por archivo porque un mueble flat-pack mezcla
+   * tableros, y el CAM los reparte en hojas distintas -Opendesk exporta
+   * un archivo por espesor-. Cargadas juntas, un solo numero global
+   * mediria la mitad de las juntas contra el tablero equivocado.
+   */
+  espesor?: number;
 }
 
 export interface RanuraCnc {
@@ -218,7 +227,9 @@ export function leerCorteDxf(contenido: string): LecturaCnc {
 
   return {
     ok: true,
-    piezas: piezasUnicas,
+    piezas: espesorFinal != null
+      ? piezasUnicas.map((p) => ({ ...p, espesor: espesorFinal }))
+      : piezasUnicas,
     descartados,
     espesor: espesorFinal,
     ranuras,

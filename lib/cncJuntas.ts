@@ -51,6 +51,16 @@ export interface Junta {
   normal: Pt;
   /** Para poder nombrarla en pantalla. */
   etiqueta: string;
+  /**
+   * Espesor del tablero en el que esta cortada esta junta.
+   *
+   * No es el de la pieza que entra en ella: en un mueble que mezcla
+   * tableros, una ranura de 18 mm cortada en un entrepano de 12 recibe
+   * una pieza de 18. Por eso el ancho se compara contra los espesores
+   * que hay en el juego, y el propio solo gobierna los umbrales de
+   * ruido del contorno.
+   */
+  propio: number;
 }
 
 /** Tolerancia al comparar medidas de junta, en mm. */
@@ -206,6 +216,16 @@ function corte(a: Pt, da: Pt, b: Pt, db: Pt): Pt | null {
 const aRecta = (x: Pt, p: Pt, u: Pt) => Math.abs(cruz(u, resta(x, p)));
 
 /**
+ * Si una medida puede ser el ancho de alguno de los tableros del juego.
+ *
+ * Se prueba contra TODOS los espesores presentes y no solo contra el de
+ * la pieza: lo que entra en una ranura es otra pieza, y en un flat-pack
+ * que mezcla 12 y 18 la ranura de un tablero de 12 mide 18.
+ */
+const esTablero = (x: number, espesores: number[], tope: number) =>
+  espesores.some((t) => x >= t * 0.85 && x <= t * tope);
+
+/**
  * Juntas del canto: escalones rectangulares del contorno.
  *
  * Un escalon son tres rectas donde la primera y la tercera van en
@@ -232,7 +252,7 @@ const aRecta = (x: Pt, p: Pt, u: Pt) => Math.abs(cruz(u, resta(x, p)));
  * entre las puntas de los dos flancos: ahi es donde asienta la pieza
  * que entra, y no en el rebaje que se hunde cuatro milimetros mas.
  */
-function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number): Junta[] {
+function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number, tableros: number[]): Junta[] {
   const n = anillo.length;
   if (n < 3) return [];
 
@@ -377,7 +397,7 @@ function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number): Junta[] {
     // Una media madera, en cambio, se come media pieza a proposito: sus
     // 90 mm de fondo son legitimos, y lo que la identifica no es el
     // fondo sino que mida de ancho justo un tablero.
-    const anchoDeTablero = largo >= espesor * 0.85 && largo <= espesor * 1.7;
+    const anchoDeTablero = esTablero(largo, tableros, 1.7);
     if (espiga && fondo > espesor * 2) continue;
     if (!espiga && !anchoDeTablero && fondo > espesor * 3) continue;
 
@@ -395,6 +415,7 @@ function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number): Junta[] {
       eje: unit(resta(p23, p12)),
       normal: espiga ? e1.dir : [-e1.dir[0], -e1.dir[1]],
       etiqueta: `${espiga ? "espiga" : "caja"} ${Math.round(largo)}`,
+      propio: espesor,
     });
   }
   return out;
@@ -416,10 +437,10 @@ function escalonesDe(anillo: Pt[], c: ContornoCnc, espesor: number): Junta[] {
  * medias maderas-, y lo que aporta no es precision sino las juntas que
  * el otro no alcanza a ver.
  */
-function juntasDeCanto(c: ContornoCnc, espesor: number): Junta[] {
+function juntasDeCanto(c: ContornoCnc, espesor: number, tableros: number[]): Junta[] {
   const crudo = anilloLimpio(c.ext);
-  const out = escalonesDe(simplificar(crudo, EPS_SIMPLIFICAR), c, espesor);
-  for (const j of escalonesDe(crudo, c, espesor)) {
+  const out = escalonesDe(simplificar(crudo, EPS_SIMPLIFICAR), c, espesor, tableros);
+  for (const j of escalonesDe(crudo, c, espesor, tableros)) {
     const yaEsta = out.some(
       (q) =>
         q.tipo === j.tipo &&
@@ -442,7 +463,7 @@ function juntasDeCanto(c: ContornoCnc, espesor: number): Junta[] {
  * La separacion se admite hasta 1.6 veces el espesor: una espiga que
  * entra en angulo deja la ranura mas ancha por espesor/cos(angulo).
  */
-function juntasDeCara(c: ContornoCnc, espesor: number): Junta[] {
+function juntasDeCara(c: ContornoCnc, espesor: number, tableros: number[]): Junta[] {
   const out: Junta[] = [];
   for (const h of c.huecos) {
     const p = simplificar(anilloLimpio(h), EPS_SIMPLIFICAR);
@@ -453,7 +474,7 @@ function juntasDeCara(c: ContornoCnc, espesor: number): Junta[] {
         const B = rectas[j];
         if (punto(A.dir, B.dir) > -0.95) continue;
         const sep = aRecta(B.base, A.base, A.dir);
-        if (sep < espesor * 0.85 || sep > espesor * 1.6) continue;
+        if (!esTablero(sep, tableros, 1.6)) continue;
 
         const u = A.dir;
         const nrm: Pt = [-u[1], u[0]];
@@ -519,6 +540,7 @@ function juntasDeCara(c: ContornoCnc, espesor: number): Junta[] {
           eje: u,
           normal: [0, 0],
           etiqueta: `ranura ${Math.round(u1 - u0)}`,
+          propio: espesor,
         });
       }
     }
@@ -584,9 +606,25 @@ function tramoDeAnchoEntero(
   return [mejor[0] - paso / 2, mejor[1] + paso / 2];
 }
 
-/** Todas las juntas de una pieza. */
-export function juntasDe(c: ContornoCnc, espesor: number): Junta[] {
-  return [...juntasDeCanto(c, espesor), ...juntasDeCara(c, espesor)];
+/**
+ * Todas las juntas de una pieza.
+ *
+ * `espesor` es el del tablero de la pieza -manda el suyo si lo trae- y
+ * gobierna los umbrales de ruido del contorno. `tableros` son los
+ * espesores que hay en el juego entero, contra los que se mide el ancho
+ * de lo que ENTRA en cada junta.
+ */
+export function juntasDe(c: ContornoCnc, espesor: number, tableros?: number[]): Junta[] {
+  const propio = c.espesor ?? espesor;
+  const cand = tableros?.length ? tableros : [propio];
+  return [...juntasDeCanto(c, propio, cand), ...juntasDeCara(c, propio, cand)];
+}
+
+/** Espesores distintos presentes en un juego de piezas. */
+export function tablerosDe(piezas: ContornoCnc[], porDefecto: number): number[] {
+  const v = new Set<number>();
+  for (const p of piezas) v.add(p.espesor ?? porDefecto);
+  return [...v].sort((a, b) => a - b);
 }
 
 /** Una junta que recibe a otra, en vez de entrar en ella. */
@@ -629,8 +667,13 @@ export function encajan(a: Junta, b: Junta, espesor: number): "pasante" | "media
   }
   if (a.tipo === "caja" && b.tipo === "caja") {
     if (Math.abs(a.largo - b.largo) > TOL_JUNTA) return null;
-    const anchoTablero = (x: Junta) => x.largo >= espesor * 0.85 && x.largo <= espesor * 1.7;
-    return anchoTablero(a) && anchoTablero(b) ? "media" : null;
+    // Cada caja tiene que medir de ancho el tablero de la pieza que
+    // recibe, que es la OTRA. Con un solo espesor en el juego da lo
+    // mismo; con dos, comparar contra el propio rechaza la mitad de las
+    // medias maderas buenas.
+    const cabe = (x: Junta, otro: Junta) =>
+      esTablero(x.largo, [otro.propio || espesor], 1.7);
+    return cabe(a, b) && cabe(b, a) ? "media" : null;
   }
   return null;
 }
@@ -661,7 +704,8 @@ export interface ResumenJuntas {
  */
 export function inventarioJuntas(piezas: ContornoCnc[], espesor: number): ResumenJuntas {
   const porPieza: Record<string, Junta[]> = {};
-  for (const p of piezas) porPieza[p.id] = juntasDe(p, espesor);
+  const tableros = tablerosDe(piezas, espesor);
+  for (const p of piezas) porPieza[p.id] = juntasDe(p, espesor, tableros);
 
   const todas = Object.values(porPieza).flat();
 

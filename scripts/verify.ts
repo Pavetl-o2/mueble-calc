@@ -745,6 +745,53 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
 }
 
 {
+  // ESPESORES MEZCLADOS. Un mueble donde una pieza de 12 entra en una de
+  // 18, repartido en dos hojas como lo exporta un CAM real. Con un solo
+  // espesor global la ranura de 12 mm en el tablero de 18 se rechaza por
+  // angosta y no empareja nada.
+  const lados = (p: [number, number][]): [number, number, number, number][] =>
+    p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+  const capa = (segs: [number, number, number, number][], mm: string) =>
+    dxfDeSegmentos(segs).replace(/\n8\n0\n/g, `\n8\nTOP-CUT-OUTSIDE_${mm}.000MM\n`);
+
+  // Hoja de 18: panel de 400x300 con una ranura pasante de 12 x 100.
+  const panel = capa([...rect(0, 0, 400, 300), ...rect(150, 100, 12, 100)], "18");
+  // Hoja de 12: pieza con una espiga de 100 de largo y 18 de vuelo.
+  const conEspiga = capa(
+    lados([[0, 0], [300, 0], [300, 200], [200, 200], [200, 218], [100, 218], [100, 200], [0, 200]]),
+    "12"
+  );
+
+  const l = leerCortesDxf([
+    { nombre: "gruesa.dxf", contenido: panel },
+    { nombre: "fina.dxf", contenido: conEspiga },
+  ]);
+  chk(l.ok, `espesores: no se pudo leer (${l.error})`);
+  chk(l.piezas.length === 2, `espesores: se esperaban 2 piezas, hay ${l.piezas.length}`);
+  const gruesa = l.piezas.find((p) => p.espesor === 18);
+  const fina = l.piezas.find((p) => p.espesor === 12);
+  chk(!!gruesa && !!fina, `espesores: cada pieza deberia llevar el de su hoja (${l.piezas.map((p) => p.espesor).join(",")})`);
+
+  const inv = inventarioJuntas(l.piezas, l.espesor ?? 18);
+  const ranura = (inv.porPieza[gruesa?.id ?? ""] ?? []).find((j) => j.tipo === "ranura");
+  const espiga = (inv.porPieza[fina?.id ?? ""] ?? []).find((j) => j.tipo === "espiga");
+  chk(!!ranura, "espesores: la ranura de 12 mm en el tablero de 18 no se reconocio");
+  chk(!!espiga, "espesores: la espiga de la pieza de 12 no se reconocio");
+  chk(
+    !!ranura && Math.abs(ranura.fondo - 12) <= 1,
+    `espesores: la ranura midio ${ranura?.fondo} de ancho, se esperaba 12`
+  );
+
+  const arm = resolverArmado(l.piezas, l.espesor ?? 18);
+  chk(arm.uniones.length >= 1, `espesores: no se unio nada (${arm.uniones.length} uniones)`);
+  chk(!arm.sueltas.length, `espesores: quedaron sueltas (${arm.sueltas.join(",")})`);
+  console.log(`espesores mezclados: ranura de ${ranura?.fondo} en tablero de 18 recibe la pieza de 12, ${arm.uniones.length} union(es)`);
+}
+
+{
   // Un dibujo SIN juntas no debe inventar un armado: se reporta que no
   // hay con que, y el visor cae a la propuesta por parametros.
   const segs = [...rect(0, 0, 800, 500), ...rect(1000, 0, 400, 300)];
