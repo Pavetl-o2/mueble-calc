@@ -155,3 +155,15 @@ Descartado que la foto etiquete piezas -que es lo que hace hoy-: en la captura
 el modelo dijo que las piezas de 1100x380 eran montantes verticales y las de
 929x189 repisas horizontales. Invirtio las dos. Ese error, convertido en
 restriccion del solver, es peor que no tener foto.
+
+### 8. Orden de trabajo
+
+1. **Espesor por pieza** (decision 5). Requisito de todo lo demas y no depende
+   de nada.
+2. **Banco sintetico** (decision 4, segunda parte). Para que el beam sea
+   medible en el momento en que se escribe, sin depender de que llegue el
+   fileset.
+3. **Beam + puntaje de cobertura** (decisiones 2 y 3), ya con los dos bancos
+   apuntandole.
+4. **Candidatos alternativos en pantalla** (decision 6) y **proporciones de la
+   foto** (decision 7).
