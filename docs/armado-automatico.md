@@ -78,3 +78,21 @@ rejilla es completa, rigida y bien aprovechada. No hay puntaje que la
 rechace. Lo que la delata es que falten los montantes, y eso solo aparece
 cargando las demas hojas. El puntaje elige bien cuando estan todas las
 piezas; no suple las que no estan.
+
+### 4. Como se valida
+
+**Con el fileset completo de Linnea**, primero. Es el caso real que fallo, y
+decide de una si la afirmacion central de la decision 3 se sostiene: que con
+todas las piezas la cobertura rechaza la rejilla.
+
+Despues, casos sinteticos con verdad conocida -generar muebles por codigo,
+exportarlos a DXF y exigir que el solver recupere el original- para poder
+ajustar constantes sobre un banco grande en vez de sobre cuatro archivos.
+Con una salvedad anotada: un banco sintetico mide la BUSQUEDA, no el
+detector, porque los alivios los genera quien ya sabe manejarlos. Para el
+detector siguen haciendo falta archivos reales de fuentes distintas.
+
+Descartada la auto-consistencia sin verdad (que el armado cierre sin huecos
+ni choques): la rejilla de Linnea la aprueba.
+
+Estado: **a la espera de las demas hojas del juego.**
