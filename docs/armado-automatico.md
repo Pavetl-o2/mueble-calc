@@ -167,3 +167,37 @@ restriccion del solver, es peor que no tener foto.
    apuntandole.
 4. **Candidatos alternativos en pantalla** (decision 6) y **proporciones de la
    foto** (decision 7).
+
+---
+
+## Fuera de plan: el espesor medido entre paredes
+
+Aparecio al escribir las instrucciones de armado de la mesa y no estaba en las
+ocho decisiones porque no se conocia entonces.
+
+`inferirEspesor` tomaba el LARGO de la arista mas corta de una mortaja. El
+radio de la fresa redondea los dos rincones de cada pared, asi que el tramo
+recto que sobra es mas corto que el ancho real. En square_table.dxf, la
+mortaja en cruz tiene brazos de 30.0 mm y paredes de 23.8: la app pedia
+comprar tablero de 24 para un mueble de 30, y encima deducia de esa
+diferencia un falso "las patas entran a 36.9 grados".
+
+Ahora el ancho se mide entre PAREDES ENFRENTADAS, que es lo que el redondeo no
+mueve. Con un filtro: una pared mide de largo algo comparable a lo que separa,
+asi que dos alivios de esquina enfrentados no cuentan como mortaja -en la cruz
+de prueba, los dos chaflanes de 8.8 mm se miraban a 51 mm y de ahi salia una
+mortaja inventada de 51-.
+
+    archivo   antes                        ahora
+    mesa      24 + falso angulo de 36.9    30, sin angulo
+    silla     18                           18
+    banco     sin espesor                  sin espesor
+    linnea    12 (de la capa)              12
+
+**Pendiente relacionado, sin resolver:** el banco no tiene ni una mortaja
+interior -se arma entero con medias maderas de canto- asi que no da espesor
+por ningun lado y la app le pone 18 por defecto, callada. Sus 116 cajas miden
+19.5 a 20.0, que sugiere tablero de 20. No se toco: inferir el espesor del
+ancho de una caja de canto vale cuando la caja es media madera y no vale
+cuando es una mortaja abierta -en la silla daria 86-, y con un solo archivo de
+ejemplo seria otra constante ajustada a mano.

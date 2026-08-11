@@ -677,6 +677,43 @@ function rect(x0: number, y0: number, w: number, h: number): [number, number, nu
 }
 
 {
+  // ESPESOR MEDIDO ENTRE PAREDES. Una mortaja en cruz de brazos de 30 mm
+  // con los cuatro rincones aliviados por el radio de la fresa: las
+  // paredes quedan en 23.8 mm de recta y los chaflanes en 8.8. Medido
+  // por el largo de la arista mas corta -como se hacia- el espesor salia
+  // 9; medido entre paredes enfrentadas sale 30, que es el tablero.
+  // Es el caso real de square_table.dxf, donde la app pedia comprar
+  // tablero de 24 para un mueble de 30.
+  const c = 6.2;
+  const cruz: [number, number][] = [
+    [30, 0], [60, 0], [60, 30 - c], [60 + c, 30], [90, 30], [90, 60],
+    [60 + c, 60], [60, 60 + c], [60, 90], [30, 90], [30, 60 + c], [30 - c, 60],
+    [0, 60], [0, 30], [30 - c, 30], [30, 30 - c],
+  ];
+  const desplazada = cruz.map(([x, y]) => [x + 150, y + 100] as [number, number]);
+  const lados = (p: [number, number][]): [number, number, number, number][] =>
+    p.map((q, i) => {
+      const r = p[(i + 1) % p.length];
+      return [q[0], q[1], r[0], r[1]] as [number, number, number, number];
+    });
+
+  const l = leerCorteDxf(dxfDeSegmentos([...rect(0, 0, 400, 300), ...lados(desplazada)]));
+  chk(l.ok, `espesor: no se pudo leer (${l.error})`);
+  chk(l.piezas.length === 1, `espesor: se esperaba 1 pieza, hay ${l.piezas.length}`);
+  chk(
+    l.espesor === 30,
+    `espesor: se esperaban 30 mm entre paredes de la cruz, salio ${l.espesor}`
+  );
+  // Y no debe inventar un angulo de entrada: con un solo ancho de mortaja
+  // no hay nada inclinado que reportar.
+  chk(
+    !l.ranuras.some((r) => r.anguloGrados),
+    `espesor: no deberia deducir ningun angulo (${JSON.stringify(l.ranuras)})`
+  );
+  console.log(`espesor entre paredes: cruz de brazos de 30 con alivios de 6.2 -> ${l.espesor} mm, sin angulo inventado`);
+}
+
+{
   // ESPESOR DECLARADO EN LA CAPA y LAYOUTS REPETIDOS. Un CAM nombra la
   // capa con la operacion y su profundidad, y dibuja la hoja mas de una
   // vez para que el operador elija la cara. Las dos cosas juntas daban

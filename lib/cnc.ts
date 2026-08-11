@@ -603,17 +603,7 @@ function inferirEspesor(piezas: ContornoCnc[]): {
   const anchos: number[] = [];
 
   for (const p of piezas) {
-    for (const h of p.huecos) {
-      // El ancho de una mortaja es la menor de sus aristas rectas
-      // repetidas: en una cruz son los brazos, en una ranura los lados.
-      const rectas = aristasRectas(h);
-      if (!rectas.length) continue;
-      const min = Math.min(...rectas);
-      if (min >= 3 && min <= 60) anchos.push(Math.round(min * 10) / 10);
-      // Una cruz tiene dos anchos distintos: se toman ambos.
-      const otro = rectas.find((v) => v > min * 1.15 && v <= 60);
-      if (otro) anchos.push(Math.round(otro * 10) / 10);
-    }
+    for (const h of p.huecos) anchos.push(...anchosDeMortaja(h));
   }
 
   if (!anchos.length) {
@@ -662,12 +652,54 @@ function inferirEspesor(piezas: ContornoCnc[]): {
   return { espesor, ranuras, notas };
 }
 
-/** Longitudes de las aristas rectas de un contorno, ignorando el teselado. */
-function aristasRectas(l: Pt[]): number[] {
+/**
+ * Anchos de una mortaja, medidos entre paredes enfrentadas.
+ *
+ * NO se mide el largo de una arista. El radio de la fresa redondea las
+ * dos esquinas de cada pared y el tramo recto que sobra es mas corto
+ * que el ancho de verdad: en la mesa, los brazos de 30 mm de la mortaja
+ * en cruz dejan paredes de 23.8 y el espesor salia 24 en vez de 30; en
+ * la estanteria de Opendesk una cajera de 12 con chaflanes de 4 dejaba
+ * un tramo recto de 4, y el espesor salia 4.
+ *
+ * La distancia entre las dos paredes, en cambio, no la toca ni el
+ * redondeo ni el chaflan: las paredes siguen donde estaban, mas cortas.
+ */
+function anchosDeMortaja(h: Pt[]): number[] {
+  const lados: { a: Pt; dx: number; dy: number; len: number }[] = [];
+  for (let i = 0; i < h.length - 1; i++) {
+    const dx = h[i + 1][0] - h[i][0];
+    const dy = h[i + 1][1] - h[i][1];
+    const len = Math.hypot(dx, dy);
+    if (len > 1.5) lados.push({ a: h[i], dx: dx / len, dy: dy / len, len });
+  }
+
   const out: number[] = [];
-  for (let i = 0; i < l.length - 1; i++) {
-    const d = dist(l[i], l[i + 1]);
-    if (d > 1.5) out.push(d);
+  for (let i = 0; i < lados.length; i++) {
+    for (let j = i + 1; j < lados.length; j++) {
+      const A = lados[i];
+      const B = lados[j];
+      // Encontradas, no paralelas al mismo lado: son las dos caras de
+      // un mismo brazo y el contorno las recorre en sentidos opuestos.
+      if (A.dx * B.dx + A.dy * B.dy > -0.98) continue;
+      const sep = Math.abs(A.dx * (B.a[1] - A.a[1]) - A.dy * (B.a[0] - A.a[0]));
+      if (sep < 3 || sep > 60) continue;
+      // Un alivio de esquina tambien va encontrado con el de la esquina
+      // opuesta, y da una separacion que no es ningun brazo: en una cruz
+      // de 30, los dos chaflanes de 8.8 se enfrentaban a 51 mm y de ahi
+      // salia una mortaja inventada de 51 con su angulo de 54 grados.
+      // Una pared mide de largo algo comparable a lo que separa; un
+      // alivio, no.
+      if (Math.min(A.len, B.len) < sep * 0.4) continue;
+      // Y tienen que mirarse: dos paredes de brazos distintos de una
+      // cruz tambien van encontradas, pero no se solapan.
+      const s = (x: number, y: number) => A.dx * (x - A.a[0]) + A.dy * (y - A.a[1]);
+      const b0 = s(B.a[0], B.a[1]);
+      const b1 = s(B.a[0] + B.dx * B.len, B.a[1] + B.dy * B.len);
+      const solape = Math.min(A.len, Math.max(b0, b1)) - Math.max(0, Math.min(b0, b1));
+      if (solape < Math.min(A.len, B.len) * 0.5) continue;
+      out.push(Math.round(sep * 10) / 10);
+    }
   }
   return out;
 }
